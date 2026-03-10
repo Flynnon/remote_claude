@@ -620,13 +620,15 @@ class LarkHandler:
         cwd = self._get_pid_cwd(pid) if pid else None
         dir_label = cwd.rstrip("/").rsplit("/", 1)[-1] if cwd else session_name
 
-        import lark_oapi as lark
         from . import config
         try:
             import json as _json
             import urllib.request
+            import datetime
+            _time_str = datetime.datetime.now().strftime("%H-%M")
+            group_name = f"{config.GROUP_NAME_PREFIX}{dir_label}-{_time_str}"
             req_body = {
-                "name": f"【{dir_label}】{config.BOT_NAME}",
+                "name": group_name,
                 "description": f"Remote Claude 专属群 - 会话 {session_name}",
                 "user_id_list": [user_id],
             }
@@ -665,7 +667,7 @@ class LarkHandler:
 
             await card_service.send_text(
                 chat_id,
-                f"✅ 已创建专属群「【{dir_label}】{config.BOT_NAME}」并已连接\n"
+                f"✅ 已创建专属群「{group_name}」并已连接\n"
                 f"在群内直接发消息即可与 Claude 交互"
             )
             # 刷新会话列表卡片，使"创建群聊"按钮变为"进入群聊"

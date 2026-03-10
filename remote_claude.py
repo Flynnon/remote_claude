@@ -387,6 +387,43 @@ def cmd_stats(args):
     return 0
 
 
+def cmd_update(args):
+    """更新 remote-claude 到最新版本"""
+    import subprocess as _sp
+
+    git_dir = SCRIPT_DIR / ".git"
+    if git_dir.exists():
+        # 源码安装：git pull 更新
+        print(f"检测到源码安装（{SCRIPT_DIR}）")
+        print("正在更新...")
+        result = _sp.run(["git", "pull"], cwd=SCRIPT_DIR)
+        if result.returncode != 0:
+            print("❌ git pull 失败")
+            return 1
+        # 同步 Python 依赖
+        _sp.run(["uv", "sync"], cwd=SCRIPT_DIR)
+        print("✅ 更新完成")
+    else:
+        # npm 安装：区分本地和全局
+        install_dir_str = str(SCRIPT_DIR)
+        if "node_modules" in install_dir_str:
+            # 本地 npm 安装：找到项目根目录（node_modules 的上两级）
+            project_root = SCRIPT_DIR.parent.parent
+            print(f"检测到 npm 本地安装（{project_root}）")
+            print("正在更新...")
+            result = _sp.run(["npm", "install", "remote-claude@latest"], cwd=project_root)
+        else:
+            # 全局 npm 安装
+            print("检测到 npm 全局安装")
+            print("正在更新...")
+            result = _sp.run(["npm", "install", "-g", "remote-claude@latest"])
+        if result.returncode != 0:
+            print("❌ npm 更新失败")
+            return 1
+        print("✅ 更新完成，请重启终端使新版本生效")
+    return 0
+
+
 def cmd_lark(args):
     """飞书客户端管理（兼容旧命令）"""
     # 如果没有子命令，默认显示状态或启动
@@ -530,6 +567,10 @@ def main():
         help="立即触发 Mixpanel 聚合上报"
     )
     stats_parser.set_defaults(func=cmd_stats)
+
+    # update 命令
+    update_parser = subparsers.add_parser("update", help="更新 remote-claude 到最新版本")
+    update_parser.set_defaults(func=cmd_update)
 
     args = parser.parse_args()
 

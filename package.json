@@ -1,6 +1,6 @@
 {
   "name": "remote-claude",
-  "version": "0.2.5",
+  "version": "0.2.7",
   "description": "双端共享 Claude CLI 工具",
   "bin": {
     "remote-claude": "bin/remote-claude",
@@ -12,7 +12,8 @@
   },
   "files": [
     "bin/",
-    "scripts/",
+    "scripts/*.sh",
+    "scripts/*.py",
     "init.sh",
     "remote_claude.py",
     "server/*.py",

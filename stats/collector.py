@@ -7,6 +7,7 @@ StatsCollector：事件收集器
 - 所有异常均被捕获，绝不影响主流程
 """
 
+import logging
 import os
 import sqlite3
 import threading
@@ -14,6 +15,8 @@ import time
 from collections import deque
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .machine import get_machine_id, get_machine_info
 
@@ -321,16 +324,49 @@ class StatsCollector:
 
     def report_install(self) -> None:
         """首次运行时上报 install 事件和 user profile"""
-        if not self._mp or not self._is_first_run:
+        if not self._is_first_run or not self._mp_token:
             return
-        try:
-            machine_info = get_machine_info()
-            import datetime
-            self._mp.people_set(self._machine_id, {
-                '$name': machine_info['hostname'],
-                **machine_info,
-                'first_seen': datetime.datetime.now().isoformat(),
-            })
-            self._mp_track('install', machine_info)
-        except Exception:
-            pass
+
+        machine_info = get_machine_info()
+        machine_id = self._machine_id
+        mp_token = self._mp_token
+        mp = self._mp  # 可能为 None（mixpanel 包未安装时）
+
+        def _send() -> None:
+            try:
+                import base64
+                import json
+                import urllib.request
+
+                props = {**machine_info, 'token': mp_token, 'distinct_id': machine_id}
+                data = base64.b64encode(json.dumps([{
+                    'event': 'install',
+                    'properties': props,
+                }]).encode()).decode()
+                req = urllib.request.Request(
+                    'https://api.mixpanel.com/track',
+                    data=f'data={data}'.encode(),
+                    method='POST',
+                )
+                urllib.request.urlopen(req, timeout=10)
+                logger.debug('install event sent via urllib (machine_id=%s)', machine_id)
+            except Exception as e:
+                logger.warning('install event failed: %s', e)
+
+            # 同时更新 user profile（仅 SDK 可用时）
+            if mp:
+                try:
+                    import datetime
+                    mp.people_set(machine_id, {
+                        '$name': machine_info['hostname'],
+                        **machine_info,
+                        'first_seen': datetime.datetime.now().isoformat(),
+                    })
+                    logger.debug('people_set sent via mixpanel SDK')
+                except Exception as e:
+                    logger.warning('people_set failed: %s', e)
+            else:
+                logger.debug('mixpanel SDK not available, skipping people_set')
+
+        t = threading.Thread(target=_send, daemon=True)
+        t.start()
