@@ -231,6 +231,32 @@ remote-claude lark status        # 查看状态
 
 飞书中与机器人对话，可用命令：`/menu`、`/attach`、`/detach`、`/list`、`/help` 等。
 
+## 高级配置
+
+在 `~/.remote-claude/.env` 中可配置以下选项：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `CLAUDE_COMMAND` | `claude` | 启动 Claude CLI 的命令 |
+| `FEISHU_APP_ID` | — | 飞书应用 ID |
+| `FEISHU_APP_SECRET` | — | 飞书应用密钥 |
+| `ENABLE_USER_WHITELIST` | `false` | 是否启用用户白名单 |
+| `ALLOWED_USERS` | — | 白名单用户 ID，逗号分隔 |
+
+### 自定义 Claude CLI 命令
+
+若你的 Claude CLI 安装方式不同，启动命令不是 `claude`，可通过 `CLAUDE_COMMAND` 指定：
+
+```bash
+# ~/.remote-claude/.env
+
+# 使用两段式命令（如 ccr code）
+CLAUDE_COMMAND=ccr code
+
+# 使用绝对路径
+CLAUDE_COMMAND=/usr/local/bin/claude
+```
+
 ## 系统要求
 
 - **操作系统**: macOS 或 Linux

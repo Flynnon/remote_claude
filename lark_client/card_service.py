@@ -22,6 +22,23 @@ from lark_oapi.api.cardkit.v1 import (
 
 from . import config
 
+
+def _is_element_limit_error(msg: str) -> bool:
+    """判断飞书 API 返回的错误是否为元素超限"""
+    if not msg:
+        return False
+    lower = msg.lower()
+    return "element exceeds" in lower or "超限" in lower
+
+
+class _ElementLimitResult:
+    """元素超限的哨兵返回值，__bool__ 为 False 兼容现有 if not success 逻辑"""
+    is_element_limit = True
+
+    def __bool__(self):
+        return False
+
+
 import sys as _sys
 _sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
 try:
@@ -193,6 +210,10 @@ class CardService:
                     return True
                 else:
                     logger.warning(f"更新卡片失败(attempt={attempt+1}): card_id={card_id} seq={sequence} code={response.code} msg={response.msg}")
+                    if _is_element_limit_error(response.msg):
+                        # 元素超限是内容问题，重试无意义，直接返回哨兵值
+                        logger.warning(f"检测到元素超限错误，跳过重试: card_id={card_id}")
+                        return _ElementLimitResult()
             except Exception as e:
                 logger.error(f"更新卡片异常(attempt={attempt+1}): card_id={card_id} seq={sequence} error={e}")
 

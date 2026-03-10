@@ -57,7 +57,8 @@ def _block_id_from_dict(d: dict) -> str:
     """从已序列化的 component dict 计算 block_id（与 server._block_id 逻辑一致）"""
     t = d.get('_type', '')
     if t == 'UserInput':
-        return f"U:{d.get('text', '')[:80]}"
+        first_line = d.get('text', '').split('\n', 1)[0][:80]
+        return f"U:{first_line}"
     elif t == 'OutputBlock':
         content = d.get('content', '')
         first_line = content.split('\n', 1)[0].strip()[:80]

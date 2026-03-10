@@ -30,12 +30,20 @@ from utils.session import (
     list_active_sessions, is_session_active, cleanup_session,
     is_lark_running, get_lark_pid, get_lark_status, get_lark_pid_file,
     save_lark_status, cleanup_lark,
-    USER_DATA_DIR, ensure_user_data_dir, get_lark_log_file
+    USER_DATA_DIR, ensure_user_data_dir, get_lark_log_file,
+    get_env_snapshot_path
 )
 
 
 # 获取脚本所在目录
 SCRIPT_DIR = Path(__file__).parent.absolute()
+
+# 读取版本号（仅 import 时读取一次）
+try:
+    import json as _json
+    _VERSION = _json.loads((SCRIPT_DIR / "package.json").read_text())["version"]
+except Exception:
+    _VERSION = "unknown"
 
 
 def cmd_start(args):
@@ -55,6 +63,15 @@ def cmd_start(args):
         return 1
 
     ensure_socket_dir()
+
+    # 将当前 shell 的完整环境变量保存到快照文件（权限 0600 防止密钥泄露）
+    # tmux new-session 继承的是 tmux 服务器的全局环境，而非调用方 shell 的环境，
+    # 通过快照文件将完整环境传递给 server.py 的 _start_pty()
+    import json
+    env_snapshot_path = get_env_snapshot_path(session_name)
+    env_fd = os.open(str(env_snapshot_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(env_fd, 'w') as f:
+        json.dump(dict(os.environ), f)
 
     # 构建 server 命令
     server_script = SCRIPT_DIR / "server" / "server.py"
@@ -316,6 +333,7 @@ def cmd_lark_status(args):
     print("飞书客户端状态")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print(f"状态:     运行中 ✓")
+    print(f"版本:     v{_VERSION}")
     print(f"PID:      {status['pid']}")
     print(f"启动时间: {status['start_time']}")
     print(f"运行时长: {status['uptime']}")
@@ -417,6 +435,12 @@ def main():
   %(prog)s stats --session mywork    按会话筛选
   %(prog)s stats --reset             清空数据
 """
+    )
+
+    parser.add_argument(
+        "--version", "-V",
+        action="version",
+        version=f"remote-claude v{_VERSION}",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="命令")

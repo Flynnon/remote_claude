@@ -30,6 +30,17 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 from . import config
 from .lark_handler import handler
 
+
+async def _graceful_shutdown() -> None:
+    """优雅关闭：更新所有活跃流式卡片为已断开状态后退出"""
+    try:
+        await handler.disconnect_all_for_shutdown()
+    except Exception as e:
+        print(f"[Lark] graceful shutdown 异常: {e}")
+    finally:
+        import os
+        os._exit(0)
+
 def check_user_allowed(user_id: str) -> bool:
     """检查用户是否在白名单中"""
     if not config.ENABLE_USER_WHITELIST:
@@ -148,7 +159,7 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         if action_type == "list_new_group":
             session_name = action_value.get("session", "")
             print(f"[Lark] list_new_group: session={session_name}")
-            asyncio.create_task(handler._cmd_new_group(user_id, chat_id, session_name))
+            asyncio.create_task(handler._cmd_new_group(user_id, chat_id, session_name, message_id=message_id))
             return None
 
         # 列表卡片：解散群聊
@@ -163,6 +174,14 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             path = action_value.get("path", "")
             print(f"[Lark] dir_browse: path={path}")
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, path, message_id=message_id))
+            return None
+
+        # 目录卡片：翻页
+        if action_type == "dir_page":
+            path = action_value.get("path", "")
+            page = int(action_value.get("page", 0))
+            print(f"[Lark] dir_page: path={path}, page={page}")
+            asyncio.create_task(handler._cmd_ls(user_id, chat_id, path, message_id=message_id, page=page))
             return None
 
         # 目录卡片：在该目录创建新 Claude 会话
@@ -219,8 +238,13 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         # 快捷键按钮（callback 模式）
         if action_type == "send_key":
             key_name = action_value.get("key", "")
-            print(f"[Lark] send_key: key={key_name}")
-            asyncio.create_task(handler.send_raw_key(user_id, chat_id, key_name))
+            times = action_value.get("times", 1)
+            print(f"[Lark] send_key: key={key_name}" + (f" ×{times}" if times > 1 else ""))
+            async def _multi_send(k=key_name, t=times):
+                for _ in range(t):
+                    await handler.send_raw_key(user_id, chat_id, k)
+                    await asyncio.sleep(0.15)
+            asyncio.create_task(_multi_send())
             return None
 
         # 各卡片底部菜单按钮：辅助卡片就地→菜单，流式卡片降级新卡
@@ -288,12 +312,20 @@ class LarkBot:
         self.ws_client.start()
 
     def _signal_handler(self, signum, frame):
-        """处理退出信号"""
+        """处理退出信号（SIGTERM / SIGINT）"""
         print("\n正在关闭...")
         self.running = False
-        if self.ws_client:
-            # WebSocket 客户端没有 stop 方法，直接退出
-            sys.exit(0)
+        # 调度异步清理（更新所有活跃卡片为已断开状态后退出）
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(_graceful_shutdown())
+                )
+                return
+        except Exception:
+            pass
+        sys.exit(0)
 
 
 def main():

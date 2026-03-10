@@ -654,13 +654,19 @@ class ScreenParser:
 
         # UserInput：❯
         if col0 == '❯':
-            text = lines[0][1:].strip()
+            first_text = lines[0][1:].strip()
             # 内容全是分割线字符（如 ❯─────...─）→ 装饰性分隔符，忽略
-            if not text or all(c in DIVIDER_CHARS for c in text):
+            if not first_text or all(c in DIVIDER_CHARS for c in first_text):
                 return None
+            # 收集后续续行（多行输入 / 屏幕自动换行），过滤尾部空白行
+            body_lines = [l for l in lines[1:] if l.strip()]
+            text = '\n'.join([first_text] + body_lines)
             ind = col0
             ansi_ind = _get_col0_ansi(screen, first_row)
-            ansi_text = _get_row_ansi_text(screen, first_row, start_col=1).strip()
+            ansi_first = _get_row_ansi_text(screen, first_row, start_col=1).strip()
+            ansi_body = [_get_row_ansi_text(screen, r) for r in block_rows[1:]
+                         if _get_row_text(screen, r).strip()]
+            ansi_text = '\n'.join([ansi_first] + ansi_body)
             return UserInput(text=text, ansi_text=ansi_text, indicator=ind, ansi_indicator=ansi_ind)
 
         # OutputBlock：圆点字符

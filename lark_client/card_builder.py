@@ -11,9 +11,26 @@
 
 import logging
 import re as _re
+import pathlib as _pl
+import json as _json
 from typing import Dict, Any, List, Optional
 
 _cb_logger = logging.getLogger('CardBuilder')
+
+# 版本号：从 package.json 读取，import 时只读一次
+try:
+    _pkg = _pl.Path(__file__).parent.parent / "package.json"
+    _VERSION = "v" + _json.loads(_pkg.read_text())["version"]
+except Exception:
+    _VERSION = ""
+
+
+def _build_header(title: str, template: str) -> dict:
+    """构建卡片 header，自动附加版本号副标题"""
+    h: dict = {"title": {"tag": "plain_text", "content": title}, "template": template}
+    if _VERSION:
+        h["subtitle"] = {"tag": "plain_text", "content": _VERSION}
+    return h
 
 # ANSI SGR 前景色码 → 飞书颜色
 # 飞书支持: blue, wathet, turquoise, green, yellow, orange, red, carmine, violet, purple, indigo, grey
@@ -261,6 +278,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "width": "auto",
                 "elements": [{
                     "tag": "button",
+                    "name": "enter_submit",
                     "text": {"tag": "plain_text", "content": "Enter ↵"},
                     "type": "primary",
                     "action_type": "form_submit",
@@ -290,6 +308,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "width": "auto",
                 "elements": [{
                     "tag": "button",
+                    "name": "enter_submit",
                     "text": {"tag": "plain_text", "content": "Enter ↵"},
                     "type": "primary",
                     "action_type": "form_submit",
@@ -312,6 +331,7 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
         ("Ctrl+O", {"action": "send_key", "key": "ctrl_o"}),
         ("Shift+Tab", {"action": "send_key", "key": "shift_tab"}),
         ("ESC", {"action": "send_key", "key": "esc"}),
+        ("(↹)×3", {"action": "send_key", "key": "shift_tab", "times": 3}),
     ]
 
     def _make_key_column(label, value):
@@ -722,10 +742,7 @@ def build_stream_card(
     return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True, "enable_forward": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": title},
-            "template": template,
-        },
+        "header": _build_header(title, template),
         "body": {"elements": elements},
     }
 
@@ -773,58 +790,57 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
                 btn_label = "进入会话"
                 btn_type = "primary"
                 btn_action = "list_attach"
-            columns = [
+            has_group = bool(session_groups and name in session_groups)
+
+            # 右列按钮（纵向堆叠）
+            right_buttons = [
                 {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 5,
-                    "elements": [{"tag": "markdown", "content": header_text}]
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": btn_label},
+                    "type": btn_type,
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": btn_action, "session": name
+                    }}]
                 },
                 {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 2,
-                    "elements": [{
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": btn_label},
-                        "type": btn_type,
-                        "behaviors": [{"type": "callback", "value": {
-                            "action": btn_action, "session": name
-                        }}]
-                    }]
-                },
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 2,
-                    "elements": [{
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "进入群聊" if (session_groups and name in session_groups) else "创建群聊"},
-                        "type": "default",
-                        "behaviors": [{"type": "open_url", "default_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[name]}"}]
-                        if (session_groups and name in session_groups) else
-                        [{"type": "callback", "value": {"action": "list_new_group", "session": name}}]
-                    }]
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "进入群聊" if has_group else "创建群聊"},
+                    "type": "default",
+                    "behaviors": [{"type": "open_url",
+                                   "default_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[name]}",
+                                   "android_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[name]}",
+                                   "ios_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[name]}",
+                                   "pc_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[name]}"}]
+                    if has_group else
+                    [{"type": "callback", "value": {"action": "list_new_group", "session": name}}]
                 },
             ]
-            if session_groups and name in session_groups:
-                columns.append({
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 2,
-                    "elements": [{
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "解散群聊"},
-                        "type": "danger",
-                        "behaviors": [{"type": "callback", "value": {
-                            "action": "list_disband_group", "session": name
-                        }}]
-                    }]
+            if has_group:
+                right_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "解散群聊"},
+                    "type": "danger",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "list_disband_group", "session": name
+                    }}]
                 })
             elements.append({
                 "tag": "column_set",
                 "flex_mode": "none",
-                "columns": columns
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 3,
+                        "elements": [{"tag": "markdown", "content": header_text}]
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 2,
+                        "elements": right_buttons
+                    },
+                ]
             })
             elements.append({"tag": "hr"})
 
@@ -852,10 +868,7 @@ def build_status_card(connected: bool, session_name: Optional[str] = None) -> Di
     return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": title},
-            "template": template,
-        },
+        "header": _build_header(title, template),
         "body": {"elements": [
             {"tag": "markdown", "content": content},
             {"tag": "hr"},
@@ -872,7 +885,7 @@ def _dir_session_name(path: str) -> str:
     return name or "session"
 
 
-def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool = False, session_groups: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool = False, session_groups: Optional[Dict[str, str]] = None, page: int = 0) -> Dict[str, Any]:
     """构建目录浏览卡片
 
     顶层目录（depth==0）带两个操作按钮：
@@ -907,9 +920,17 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
         })
         elements.append({"tag": "hr"})
 
-    cap = 20
+    PER_PAGE = 12
     total = len(entries)
-    shown = entries[:cap]
+    if tree:
+        # tree 模式不分页，直接展示全部（已有 max_items 上限）
+        shown = entries
+        page = 0
+        total_pages = 1
+    else:
+        total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+        page = max(0, min(page, total_pages - 1))
+        shown = entries[page * PER_PAGE : (page + 1) * PER_PAGE]
 
     for entry in shown:
         name = entry["name"]
@@ -921,6 +942,22 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
 
         if is_dir and depth == 0:
             auto_session = _dir_session_name(full_path)
+            group_btn = {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "进入群聊" if (session_groups and auto_session in session_groups) else "创建群聊"},
+                "type": "default",
+                "behaviors": [{"type": "open_url",
+                               "default_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}",
+                               "android_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}",
+                               "ios_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}",
+                               "pc_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}"}]
+                if (session_groups and auto_session in session_groups) else
+                [{"type": "callback", "value": {
+                    "action": "dir_new_group",
+                    "path": full_path,
+                    "session_name": auto_session
+                }}]
+            }
             elements.append({
                 "tag": "column_set",
                 "flex_mode": "none",
@@ -928,61 +965,77 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
                     {
                         "tag": "column",
                         "width": "weighted",
-                        "weight": 3,
-                        "elements": [{"tag": "markdown", "content": f"{icon} **{name}**"}]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 2,
+                        "weight": 4,
                         "elements": [{
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "📂 进入"},
-                            "type": "default",
+                            "tag": "interactive_container",
+                            "width": "fill",
+                            "height": "auto",
                             "behaviors": [{"type": "callback", "value": {
                                 "action": "dir_browse", "path": full_path
-                            }}]
+                            }}],
+                            "elements": [{"tag": "markdown", "content": f"📁 **{name}**"}]
                         }]
                     },
                     {
                         "tag": "column",
                         "width": "weighted",
                         "weight": 2,
-                        "elements": [{
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🚀 在此启动"},
-                            "type": "primary",
-                            "behaviors": [{"type": "callback", "value": {
-                                "action": "dir_start",
-                                "path": full_path,
-                                "session_name": auto_session
-                            }}]
-                        }]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 2,
-                        "elements": [{
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "进入群聊" if (session_groups and auto_session in session_groups) else "创建群聊"},
-                            "type": "default",
-                            "behaviors": [{"type": "open_url", "default_url": f"https://applink.feishu.cn/client/chat/open?openChatId={session_groups[auto_session]}"}]
-                            if (session_groups and auto_session in session_groups) else
-                            [{"type": "callback", "value": {
-                                "action": "dir_new_group",
-                                "path": full_path,
-                                "session_name": auto_session
-                            }}]
-                        }]
+                        "elements": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Claude"},
+                                "type": "primary",
+                                "behaviors": [{"type": "callback", "value": {
+                                    "action": "dir_start",
+                                    "path": full_path,
+                                    "session_name": auto_session
+                                }}]
+                            },
+                            group_btn
+                        ]
                     }
                 ]
             })
+            elements.append({"tag": "hr"})
         else:
             elements.append({"tag": "markdown", "content": f"{indent}{icon} {name}"})
 
-    if total > cap:
-        elements.append({"tag": "markdown", "content": f"*...（共 {total} 项，仅显示前 {cap} 项）*"})
+    if not tree and total > PER_PAGE:
+        page_cols = []
+        if page > 0:
+            page_cols.append({
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "⬅️ 上一页"},
+                    "type": "default",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "dir_page", "path": target_str, "page": page - 1
+                    }}]
+                }]
+            })
+        page_cols.append({
+            "tag": "column",
+            "width": "weighted",
+            "weight": 2,
+            "vertical_align": "center",
+            "elements": [{"tag": "markdown", "content": f"第 {page + 1}/{total_pages} 页"}]
+        })
+        if page < total_pages - 1:
+            page_cols.append({
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "下一页 ➡️"},
+                    "type": "default",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "dir_page", "path": target_str, "page": page + 1
+                    }}]
+                }]
+            })
+        elements.append({"tag": "column_set", "flex_mode": "none", "columns": page_cols})
 
     elements.append({"tag": "hr"})
     elements.append(_build_menu_button_only())
@@ -990,7 +1043,7 @@ def build_dir_card(target, entries: List[Dict], sessions: List[Dict], tree: bool
     return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
-        "header": {"title": {"tag": "plain_text", "content": title}, "template": "blue"},
+        "header": _build_header(title, "blue"),
         "body": {"elements": elements}
     }
 
@@ -1022,10 +1075,7 @@ def build_help_card() -> Dict[str, Any]:
     return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "📖 Remote Claude 帮助"},
-            "template": "blue",
-        },
+        "header": _build_header("📖 Remote Claude 帮助", "blue"),
         "body": {"elements": [
             {"tag": "markdown", "content": help_content},
             {"tag": "hr"},
@@ -1039,10 +1089,7 @@ def build_session_closed_card(session_name: str) -> Dict[str, Any]:
     return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "🔴 会话已关闭"},
-            "template": "red",
-        },
+        "header": _build_header("🔴 会话已关闭", "red"),
         "body": {"elements": [
             {"tag": "markdown", "content": f"会话 **{session_name}** 已关闭，连接已自动断开。\n\n如需继续，请重新启动会话或连接到其他会话。"},
             {"tag": "hr"},
@@ -1096,17 +1143,6 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
                 "weight": 1,
                 "elements": [{
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "📖 帮助"},
-                    "type": "default",
-                    "behaviors": [{"type": "callback", "value": {"action": "menu_help"}}]
-                }]
-            },
-            {
-                "tag": "column",
-                "width": "weighted",
-                "weight": 1,
-                "elements": [{
-                    "tag": "button",
                     "text": {"tag": "plain_text", "content": "📂 文件列表"},
                     "type": "default",
                     "behaviors": [{"type": "callback", "value": {"action": "menu_ls"}}]
@@ -1129,9 +1165,6 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
     return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "⚡ 快捷操作"},
-            "template": "turquoise",
-        },
+        "header": _build_header("⚡ 快捷操作", "turquoise"),
         "body": {"elements": elements}
     }

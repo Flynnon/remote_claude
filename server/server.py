@@ -35,8 +35,15 @@ from utils.protocol import (
 )
 from utils.session import (
     get_socket_path, get_pid_file, ensure_socket_dir,
-    generate_client_id, cleanup_session, _safe_filename
+    generate_client_id, cleanup_session, _safe_filename, get_env_file
 )
+
+# 加载用户 .env 配置（支持 CLAUDE_COMMAND 等）
+try:
+    from dotenv import load_dotenv
+    load_dotenv(get_env_file())
+except Exception:
+    pass
 
 try:
     from stats import track as _track_stats
@@ -533,9 +540,11 @@ class ProxyServer:
     """Proxy Server"""
 
     def __init__(self, session_name: str, claude_args: list = None,
+                 claude_cmd: str = "claude",
                  debug_screen: bool = False, debug_verbose: bool = False):
         self.session_name = session_name
         self.claude_args = claude_args or []
+        self.claude_cmd = claude_cmd
         self.debug_screen = debug_screen
         self.debug_verbose = debug_verbose
         self.socket_path = get_socket_path(session_name)
@@ -606,16 +615,42 @@ class ProxyServer:
 
     def _start_pty(self):
         """启动 PTY 并运行 Claude"""
-        pid, fd = pty.fork()
+        # 加载环境变量快照（从 cmd_start 保存的快照文件恢复调用方 shell 的完整环境）
+        from utils.session import get_env_snapshot_path
+        import json as _json
+        env_snapshot_path = get_env_snapshot_path(self.session_name)
+        _extra_env = {}
+        try:
+            with open(env_snapshot_path) as _f:
+                _extra_env = _json.load(_f)
+        except Exception:
+            pass
+
+        try:
+            pid, fd = pty.fork()
+        except OSError:
+            env_snapshot_path.unlink(missing_ok=True)
+            raise
 
         if pid == 0:
+            # 环境已加载到内存，立即删除快照文件（exec 前销毁）
+            try:
+                env_snapshot_path.unlink()
+            except Exception:
+                pass
+            # 以快照为权威来源完整替换子进程环境，确保 unset 的变量也消失
+            # 若 snapshot 加载失败（_extra_env 为空），降级使用当前进程环境
+            child_env = dict(_extra_env) if _extra_env else dict(os.environ)
             # 恢复 TERM 以支持 kitty keyboard protocol（Shift+Enter 等扩展键）
             # tmux 会将 TERM 改为 tmux-256color，导致 Claude CLI 不启用 kitty protocol
-            os.environ['TERM'] = 'xterm-256color'
+            child_env['TERM'] = 'xterm-256color'
             # 清除 tmux 标识变量（PTY 数据不经过 tmux，不应让 Claude CLI 误判终端环境）
-            for key in ('TMUX', 'TMUX_PANE'):
-                os.environ.pop(key, None)
-            os.execvp("claude", ["claude"] + self.claude_args)
+            child_env.pop('TMUX', None)
+            child_env.pop('TMUX_PANE', None)
+            import shlex as _shlex
+            _cmd_parts = _shlex.split(self.claude_cmd)
+            os.execvpe(_cmd_parts[0], _cmd_parts + self.claude_args, child_env)
+            os._exit(1)  # execvpe 失败时兜底退出
         else:
             # 父进程
             self.master_fd = fd
@@ -777,10 +812,11 @@ class ProxyServer:
 
 
 def run_server(session_name: str, claude_args: list = None,
+               claude_cmd: str = "claude",
                debug_screen: bool = False, debug_verbose: bool = False):
     """运行服务器"""
-    server = ProxyServer(session_name, claude_args, debug_screen=debug_screen,
-                         debug_verbose=debug_verbose)
+    server = ProxyServer(session_name, claude_args, claude_cmd=claude_cmd,
+                         debug_screen=debug_screen, debug_verbose=debug_verbose)
 
     # 信号处理
     def signal_handler(signum, frame):
@@ -808,5 +844,6 @@ if __name__ == "__main__":
                         help="debug 日志输出完整诊断信息（indicator、repr 等）")
     args = parser.parse_args()
 
-    run_server(args.session_name, args.claude_args, debug_screen=args.debug_screen,
-               debug_verbose=args.debug_verbose)
+    claude_cmd = os.environ.get("CLAUDE_COMMAND", "claude")
+    run_server(args.session_name, args.claude_args, claude_cmd=claude_cmd,
+               debug_screen=args.debug_screen, debug_verbose=args.debug_verbose)

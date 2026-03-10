@@ -1,6 +1,6 @@
 {
   "name": "remote-claude",
-  "version": "0.1.5",
+  "version": "0.2.5",
   "description": "双端共享 Claude CLI 工具",
   "bin": {
     "remote-claude": "bin/remote-claude",
@@ -26,13 +26,22 @@
     "uv.lock",
     ".env.example"
   ],
-  "os": ["darwin", "linux"],
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yuyangzi/remote_claude.git"
   },
-  "keywords": ["claude", "cli", "terminal", "pty", "lark"],
+  "keywords": [
+    "claude",
+    "cli",
+    "terminal",
+    "pty",
+    "lark"
+  ],
   "engines": {
     "node": ">=16"
   },

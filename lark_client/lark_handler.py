@@ -26,7 +26,6 @@ from .card_builder import (
     build_help_card,
     build_dir_card,
     build_menu_card,
-    build_session_closed_card,
 )
 from .shared_memory_poller import SharedMemoryPoller, CardSlice
 
@@ -44,6 +43,7 @@ class LarkHandler:
 
     _CHAT_BINDINGS_FILE = get_chat_bindings_file()
     _OLD_CHAT_BINDINGS_FILE = Path("/tmp/remote-claude/lark_chat_bindings.json")
+    _LARK_GROUP_IDS_FILE = Path(get_chat_bindings_file()).parent / "lark_group_ids.json"
 
     def __init__(self):
         # 兼容迁移：旧绑定文件存在而新路径不存在时，自动迁移
@@ -62,6 +62,8 @@ class LarkHandler:
         self._poller = SharedMemoryPoller(card_service)
         # chat_id → session_name 持久化绑定（重启后自动恢复）
         self._chat_bindings: Dict[str, str] = self._load_chat_bindings()
+        # 专属群聊 chat_id 集合（仅包含通过 /new-group 创建的群）
+        self._group_chat_ids: set = self._load_group_chat_ids()
         # chat_id → CardSlice（用户主动断开后保留，供重连时冻结旧卡片）
         self._detached_slices: Dict[str, CardSlice] = {}
 
@@ -84,6 +86,23 @@ class LarkHandler:
         except Exception as e:
             logger.warning(f"保存绑定失败: {e}")
 
+    def _load_group_chat_ids(self) -> set:
+        try:
+            if self._LARK_GROUP_IDS_FILE.exists():
+                return set(json.loads(self._LARK_GROUP_IDS_FILE.read_text()))
+        except Exception:
+            pass
+        return set()
+
+    def _save_group_chat_ids(self):
+        try:
+            ensure_user_data_dir()
+            self._LARK_GROUP_IDS_FILE.write_text(
+                json.dumps(list(self._group_chat_ids), ensure_ascii=False)
+            )
+        except Exception as e:
+            logger.warning(f"保存群聊 ID 失败: {e}")
+
     def _remove_binding_by_chat(self, chat_id: str):
         self._chat_bindings.pop(chat_id, None)
         self._save_chat_bindings()
@@ -92,11 +111,17 @@ class LarkHandler:
 
     async def _attach(self, chat_id: str, session_name: str) -> bool:
         """统一 attach 逻辑（私聊/群聊共用）"""
+        # 在断开旧连接之前，先更新旧流式卡片为已断开状态
+        old_session = self._chat_sessions.get(chat_id)
+        old_slice = self._poller.stop_and_get_active_slice(chat_id)
+        if old_slice and old_session:
+            await self._update_card_disconnected(chat_id, old_session, old_slice)
+
         # 断开旧 bridge
         old = self._bridges.pop(chat_id, None)
         if old:
             await old.disconnect()
-        self._poller.stop(chat_id)
+        # _poller.stop 已通过 stop_and_get_active_slice 完成
         self._chat_sessions.pop(chat_id, None)
         self._detached_slices.pop(chat_id, None)
 
@@ -132,19 +157,8 @@ class LarkHandler:
         self._detached_slices.pop(chat_id, None)
         self._remove_binding_by_chat(chat_id)
 
-        card = build_session_closed_card(session_name)
         if active_slice:
-            try:
-                success = await card_service.update_card(
-                    card_id=active_slice.card_id,
-                    sequence=active_slice.sequence + 1,
-                    card_content=card,
-                )
-                if success:
-                    return
-            except Exception as e:
-                logger.warning(f"_on_disconnect 就地更新失败: {e}")
-        await card_service.create_and_send_card(chat_id, card)
+            await self._update_card_disconnected(chat_id, session_name, active_slice)
 
     # ── 消息入口 ────────────────────────────────────────────────────────────
 
@@ -398,6 +412,9 @@ class LarkHandler:
         # 断开所有连接到此会话的 chat
         for cid, sname in list(self._chat_sessions.items()):
             if sname == session_name:
+                active_slice = self._poller.stop_and_get_active_slice(cid)
+                if active_slice:
+                    await self._update_card_disconnected(cid, sname, active_slice)
                 await self._detach(cid)
                 self._remove_binding_by_chat(cid)
 
@@ -410,9 +427,43 @@ class LarkHandler:
     async def _handle_list_detach(self, user_id: str, chat_id: str,
                                    message_id: Optional[str] = None):
         """会话列表卡片中断开连接，就地刷新列表"""
+        session_name = self._chat_sessions.get(chat_id, "")
+        # 更新流式卡片为已断开状态
+        active_slice = self._poller.stop_and_get_active_slice(chat_id)
+        if active_slice and session_name:
+            await self._update_card_disconnected(chat_id, session_name, active_slice)
+
         self._remove_binding_by_chat(chat_id)
-        await self._detach(chat_id)
+        await self._detach(chat_id)   # bridge.disconnect + _poller.stop（幂等）
         await self._cmd_list(user_id, chat_id, message_id=message_id)
+
+    async def _update_card_disconnected(self, chat_id: str, session_name: str,
+                                        active_slice: 'CardSlice') -> bool:
+        """读取最新 blocks 并就地更新卡片为断开状态（disconnected=True）。Best-effort，不降级发新卡。"""
+        blocks = []
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
+            from shared_state import SharedStateReader, get_mq_path
+            mq_path = get_mq_path(session_name)
+            if mq_path.exists():
+                reader = SharedStateReader(session_name)
+                state = reader.read()
+                reader.close()
+                blocks = state.get("blocks", [])
+        except Exception:
+            pass
+        blocks_slice = blocks[active_slice.start_idx:]
+        card = build_stream_card(blocks_slice, disconnected=True, session_name=session_name)
+        try:
+            return await card_service.update_card(
+                card_id=active_slice.card_id,
+                sequence=active_slice.sequence + 1,
+                card_content=card,
+            )
+        except Exception as e:
+            logger.warning(f"_update_card_disconnected 失败 ({chat_id[:8]}...): {e}")
+            return False
 
     async def _handle_stream_detach(self, user_id: str, chat_id: str,
                                      session_name: str, message_id: Optional[str] = None):
@@ -495,12 +546,16 @@ class LarkHandler:
         """显示快捷操作菜单（内嵌会话列表）"""
         sessions = list_active_sessions()
         current = self._chat_sessions.get(chat_id)
-        session_groups = {sname: cid for cid, sname in self._chat_bindings.items() if cid.startswith("oc_")}
+        session_groups = {
+            self._chat_bindings[cid]: cid
+            for cid in self._group_chat_ids
+            if cid in self._chat_bindings
+        }
         card = build_menu_card(sessions, current_session=current, session_groups=session_groups)
         await self._send_or_update_card(chat_id, card, message_id)
 
     async def _cmd_ls(self, user_id: str, chat_id: str, args: str,
-                       tree: bool = False, message_id: Optional[str] = None):
+                       tree: bool = False, message_id: Optional[str] = None, page: int = 0):
         """查看目录文件结构"""
         all_sessions = list_active_sessions()
         sessions_info = []
@@ -539,11 +594,16 @@ class LarkHandler:
             await card_service.send_text(chat_id, f"读取目录失败：{e}")
             return
 
-        session_groups = {sname: cid for cid, sname in self._chat_bindings.items() if cid.startswith("oc_")}
-        card = build_dir_card(target, entries, sessions_info, tree=tree, session_groups=session_groups)
+        session_groups = {
+            self._chat_bindings[cid]: cid
+            for cid in self._group_chat_ids
+            if cid in self._chat_bindings
+        }
+        card = build_dir_card(target, entries, sessions_info, tree=tree, session_groups=session_groups, page=page)
         await self._send_or_update_card(chat_id, card, message_id)
 
-    async def _cmd_new_group(self, user_id: str, chat_id: str, args: str):
+    async def _cmd_new_group(self, user_id: str, chat_id: str, args: str,
+                              message_id: Optional[str] = None):
         """创建专属群聊并绑定 Claude 会话"""
         session_name = args.strip()
         if not session_name:
@@ -598,6 +658,8 @@ class LarkHandler:
             group_chat_id = create_data["data"]["chat_id"]
             self._chat_bindings[group_chat_id] = session_name
             self._save_chat_bindings()
+            self._group_chat_ids.add(group_chat_id)
+            self._save_group_chat_ids()
             # 立即 attach，让新群即刻开始接收 Claude 输出
             await self._attach(group_chat_id, session_name)
 
@@ -606,6 +668,8 @@ class LarkHandler:
                 f"✅ 已创建专属群「【{dir_label}】{config.BOT_NAME}」并已连接\n"
                 f"在群内直接发消息即可与 Claude 交互"
             )
+            # 刷新会话列表卡片，使"创建群聊"按钮变为"进入群聊"
+            await self._cmd_list(user_id, chat_id, message_id=message_id)
         except Exception as e:
             logger.error(f"创建群失败: {e}")
             await card_service.send_text(chat_id, f"创建群失败：{e}")
@@ -623,6 +687,7 @@ class LarkHandler:
 
         import json as _json
         import urllib.request
+        import urllib.error
         from . import config
         try:
             token_resp = urllib.request.urlopen(
@@ -635,20 +700,41 @@ class LarkHandler:
             )
             token = _json.loads(token_resp.read())["tenant_access_token"]
 
-            disband_resp = urllib.request.urlopen(
-                urllib.request.Request(
-                    f"https://open.feishu.cn/open-apis/im/v1/chats/{group_chat_id}",
-                    headers={"Authorization": f"Bearer {token}"},
-                    method="DELETE"
-                ), timeout=10
-            )
-            disband_data = _json.loads(disband_resp.read())
-            if disband_data.get("code") != 0:
-                await card_service.send_text(chat_id, f"解散群失败：{disband_data.get('msg')}")
-                return
+            feishu_ok = False
+            feishu_msg = ""
+            try:
+                disband_resp = urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"https://open.feishu.cn/open-apis/im/v1/chats/{group_chat_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        method="DELETE"
+                    ), timeout=10
+                )
+                disband_data = _json.loads(disband_resp.read())
+                feishu_ok = disband_data.get("code") == 0
+                feishu_msg = disband_data.get("msg", "")
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace")
+                try:
+                    err_data = _json.loads(err_body)
+                    feishu_ok = False
+                    feishu_msg = f"code={err_data.get('code')} {err_data.get('msg', '')}"
+                except Exception:
+                    feishu_ok = False
+                    feishu_msg = f"HTTP {e.code}"
+                logger.error(f"解散群 API 失败: {feishu_msg}")
 
+            # 无论 Feishu delete 是否成功，都清理本地绑定
             self._remove_binding_by_chat(group_chat_id)
+            self._group_chat_ids.discard(group_chat_id)
+            self._save_group_chat_ids()
             await self._detach(group_chat_id)
+
+            if feishu_ok:
+                notice = "✅ 群聊已解散，绑定已解除"
+            else:
+                notice = f"⚠️ Feishu 群解散失败（{feishu_msg}），已解除本地绑定。如需彻底解散请在飞书群内手动操作"
+            await card_service.send_text(chat_id, notice)
             await self._cmd_list(user_id, chat_id, message_id=message_id)
         except Exception as e:
             logger.error(f"解散群失败: {e}")
@@ -800,7 +886,7 @@ class LarkHandler:
                 })
         except PermissionError:
             pass
-        return entries[:30]
+        return entries
 
     @staticmethod
     def _collect_tree_entries(target, max_depth: int = 2, max_items: int = 60) -> list:
@@ -829,6 +915,15 @@ class LarkHandler:
 
         _walk(target, 0)
         return entries
+
+    async def disconnect_all_for_shutdown(self) -> None:
+        """lark stop 时清理所有活跃流式卡片（更新为已断开状态）"""
+        chat_ids = list(self._bridges.keys())
+        for chat_id in chat_ids:
+            session_name = self._chat_sessions.get(chat_id, "")
+            active_slice = self._poller.stop_and_get_active_slice(chat_id)
+            if active_slice and session_name:
+                await self._update_card_disconnected(chat_id, session_name, active_slice)
 
     @staticmethod
     def _get_pid_cwd(pid: int) -> Optional[str]:

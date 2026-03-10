@@ -247,7 +247,13 @@ class SharedMemoryPoller:
                 card_content=card_dict,
             )
 
-            if not success:
+            if getattr(success, 'is_element_limit', False):
+                # 元素超限：冻结旧卡 + 推新流式卡
+                await self._handle_element_limit(
+                    tracker, blocks, status_line, bottom_bar, agent_panel, option_block
+                )
+                return
+            elif not success:
                 # 降级：创建新卡片替代
                 logger.warning(
                     f"update_card 失败 card_id={active.card_id} seq={active.sequence}，降级为新卡片"
@@ -304,6 +310,48 @@ class SharedMemoryPoller:
             )
         else:
             logger.warning(f"create_card 失败 session={tracker.session_name}")
+
+    async def _handle_element_limit(
+        self, tracker: StreamTracker, blocks: List[dict],
+        status_line: Optional[dict], bottom_bar: Optional[dict],
+        agent_panel: Optional[dict] = None,
+        option_block: Optional[dict] = None,
+    ) -> None:
+        """元素超限：冻结旧卡片 + 推送新流式卡片"""
+        active = tracker.cards[-1]
+        logger.warning(f"元素超限，冻结卡片 {active.card_id} 并推新卡")
+
+        # 1. 冻结旧卡片（灰色 header，无状态区和按钮）
+        from .card_builder import build_stream_card
+        blocks_slice = blocks[active.start_idx:]
+        frozen_card = build_stream_card(blocks_slice, None, None, is_frozen=True)
+        active.sequence += 1
+        await self._card_service.update_card(active.card_id, active.sequence, frozen_card)
+        active.frozen = True
+        _track_stats('card', 'freeze', session_name=tracker.session_name,
+                     chat_id=tracker.chat_id)
+
+        # 2. 创建新流式卡片，从最近 INITIAL_WINDOW 个 blocks 开始（重置窗口）
+        new_start = max(0, len(blocks) - INITIAL_WINDOW)
+        new_blocks = blocks[new_start:]
+        if not new_blocks and not status_line and not bottom_bar:
+            return
+        new_card_dict = build_stream_card(
+            new_blocks, status_line, bottom_bar,
+            agent_panel=agent_panel, option_block=option_block,
+            session_name=tracker.session_name,
+        )
+        new_card_id = await self._card_service.create_card(new_card_dict)
+        if new_card_id:
+            await self._card_service.send_card(tracker.chat_id, new_card_id)
+            tracker.cards.append(CardSlice(card_id=new_card_id, start_idx=new_start))
+            tracker.content_hash = self._compute_hash(new_blocks, status_line, bottom_bar, agent_panel, option_block)
+            _track_stats('card', 'create', session_name=tracker.session_name,
+                         chat_id=tracker.chat_id)
+            logger.info(
+                f"[ELEMENT_LIMIT_SPLIT] session={tracker.session_name} "
+                f"new_start={new_start} blocks={len(new_blocks)} card_id={new_card_id}"
+            )
 
     async def _freeze_and_split(
         self, tracker: StreamTracker, blocks: List[dict],

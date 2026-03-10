@@ -60,6 +60,11 @@ def get_mq_path(session_name: str) -> Path:
     return SOCKET_DIR / f"{_safe_filename(session_name)}.mq"
 
 
+def get_env_snapshot_path(session_name: str) -> Path:
+    """获取环境变量快照文件路径（cmd_start 写入，_start_pty 读取后删除）"""
+    return SOCKET_DIR / f"{_safe_filename(session_name)}_env.json"
+
+
 def ensure_socket_dir():
     """确保 socket 目录存在"""
     SOCKET_DIR.mkdir(parents=True, exist_ok=True)
@@ -248,6 +253,7 @@ def cleanup_session(session_name: str):
     sock_path.unlink(missing_ok=True)
     pid_file.unlink(missing_ok=True)
     get_mq_path(session_name).unlink(missing_ok=True)
+    get_env_snapshot_path(session_name).unlink(missing_ok=True)
 
 
 def is_session_active(session_name: str) -> bool:
