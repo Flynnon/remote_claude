@@ -5,7 +5,7 @@ ClaudeParser 和 CodexParser 均继承此类。
 """
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Any, Dict, List
 
 import pyte
 
@@ -29,6 +29,9 @@ class BaseParser(ABC):
     last_input_ansi_text: str = ''
     last_parse_timing: str = ''
     last_layout_mode: str = 'normal'
+    # 诊断用：记录最近一次 parse 的区域统计与组件统计
+    last_region_stats: Dict[str, Any] = None
+    last_component_stats: Dict[str, Any] = None
 
     @abstractmethod
     def parse(self, screen: pyte.Screen) -> List:

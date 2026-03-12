@@ -38,3 +38,13 @@ GROUP_NAME_PREFIX = os.getenv("GROUP_NAME_PREFIX", "【Remote-Claude】")
 
 # 流式卡片配置
 MAX_CARD_BLOCKS = int(os.getenv("MAX_CARD_BLOCKS", "50"))
+
+# lark_client 日志级别（可选，默认 INFO）
+# 支持: DEBUG / INFO / WARNING / ERROR
+_LARK_LOG_LEVEL = os.getenv("LARK_LOG_LEVEL", "INFO").upper()
+LARK_LOG_LEVEL = {
+    "DEBUG": 10,
+    "INFO": 20,
+    "WARNING": 30,
+    "ERROR": 40,
+}.get(_LARK_LOG_LEVEL, 20)  # 默认 INFO

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Callable, Dict
 
-logging.basicConfig(level=logging.DEBUG, format='[%(name)s] %(message)s')
+logging.basicConfig(level=logging.INFO, format='[%(name)s] %(message)s')
 logger = logging.getLogger('SessionBridge')
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -47,6 +47,14 @@ class SessionBridge:
     async def connect(self) -> bool:
         """连接到会话"""
         if not self.socket_path.exists():
+            logger.error(
+                f"连接失败: Socket 文件不存在\n"
+                f"  会话名: {self.session_name}\n"
+                f"  Socket 路径: {self.socket_path}\n"
+                f"  请确认:\n"
+                f"    1. 会话已启动 (使用 /list 查看)\n"
+                f"    2. 会话名拼写正确"
+            )
             return False
         try:
             self.reader, self.writer = await asyncio.open_unix_connection(
@@ -54,9 +62,40 @@ class SessionBridge:
             )
             self.running = True
             self._read_task = asyncio.create_task(self._read_loop())
+            logger.info(f"连接成功: {self.session_name}")
             return True
+        except FileNotFoundError:
+            logger.error(
+                f"连接失败: Socket 文件不存在\n"
+                f"  会话名: {self.session_name}\n"
+                f"  Socket 路径: {self.socket_path}\n"
+                f"  可能原因: Socket 文件在连接前被删除"
+            )
+            return False
+        except ConnectionRefusedError as e:
+            # 检查进程状态
+            sessions = list_active_sessions()
+            session_exists = any(s["name"] == self.session_name for s in sessions)
+
+            logger.error(
+                f"连接失败: Connection refused\n"
+                f"  会话名: {self.session_name}\n"
+                f"  Socket 路径: {self.socket_path}\n"
+                f"  文件存在: {self.socket_path.exists()}\n"
+                f"  会话在列表中: {session_exists}\n"
+                f"  当前活跃会话: {[s['name'] for s in sessions]}\n"
+                f"  可能原因:\n"
+                f"    1. Server 进程已终止但 Socket 文件残留\n"
+                f"    2. Socket 文件权限错误\n"
+                f"    建议: 使用 /kill {self.session_name} 清理后重新启动"
+            )
+            return False
         except Exception as e:
-            logger.error(f"连接失败: {e}")
+            logger.error(
+                f"连接失败: {type(e).__name__}: {e}\n"
+                f"  会话名: {self.session_name}\n"
+                f"  Socket 路径: {self.socket_path}"
+            )
             return False
 
     async def disconnect(self):

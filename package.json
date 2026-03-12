@@ -1,6 +1,6 @@
 {
   "name": "remote-claude",
-  "version": "0.2.10",
+  "version": "0.2.13",
   "description": "双端共享 Claude CLI 工具",
   "bin": {
     "remote-claude": "bin/remote-claude",
@@ -17,6 +17,7 @@
     "init.sh",
     "remote_claude.py",
     "server/*.py",
+    "server/parsers/*.py",
     "client/*.py",
     "utils/*.py",
     "lark_client/__init__.py",

@@ -784,7 +784,12 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
             name = s["name"]
             cwd = s.get("cwd", "")
             start_time = s.get("start_time", "")
+            cli_type = s.get("cli_type", "claude")
             is_current = (name == current_session)
+
+            # CLI 类型颜色和标签：Claude=黄色，Codex=绿色
+            cli_color = "yellow" if cli_type == "claude" else "green"
+            cli_label = CLI_NAMES.get(cli_type, "Claude")
 
             status_icon = "🟢" if is_current else "⚪"
             current_label = "（当前）" if is_current else ""
@@ -792,21 +797,23 @@ def _build_session_list_elements(sessions: List[Dict], current_session: Optional
                 short_name = cwd.rstrip("/").rsplit("/", 1)[-1] or name
             else:
                 short_name = name
-            meta_parts = []
+
+            # 构建4行内容：名字、cli类型、启动时间、目录
+            lines = [f"{status_icon} **{short_name}**{current_label}"]
+            lines.append(f"<font color=\"{cli_color}\">{cli_label}</font>")
+
             if start_time:
-                meta_parts.append(f"启动：{start_time}")
+                lines.append(f"启动：{start_time}")
+
             if cwd:
                 home = os.path.expanduser("~")
                 display_cwd = cwd.replace(home, "~")
                 if len(display_cwd) > 40:
                     parts = display_cwd.rstrip("/").rsplit("/", 2)
                     display_cwd = "…/" + "/".join(parts[-2:]) if len(parts) > 2 else display_cwd[-40:]
-                meta_parts.append(f"`{display_cwd}`")
-            meta_str = "  ".join(meta_parts) if meta_parts else ""
+                lines.append(f"`{display_cwd}`")
 
-            header_text = f"{status_icon} **{short_name}**{current_label}"
-            if meta_str:
-                header_text += f"\n{meta_str}"
+            header_text = "\n".join(lines)
 
             if is_current:
                 btn_label = "断开连接"

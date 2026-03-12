@@ -43,7 +43,7 @@ cd remote_claude
 ./init.sh
 ```
 
-`init.sh` 会自动安装 uv、tmux 等依赖，配置飞书环境（可选），并写入 `cla` / `cl` 快捷命令。执行完成后重启终端生效。
+`init.sh` 会自动安装 uv、tmux 等依赖，配置飞书环境（可选），并写入 `cla` / `cl` / `cx` / `cdx` 快捷命令。执行完成后重启终端生效。
 
 ### 2. 启动
 
@@ -51,6 +51,8 @@ cd remote_claude
 |------|------|
 | `cla` | 启动 Claude (以当前目录路径为会话名) |
 | `cl` | 同 `cla`，但跳过权限确认 |
+| `cx` | 启动 Codex (以当前目录路径为会话名，跳过权限确认) |
+| `cdx` | 同 `cx`，但需要确认权限 |
 | `remote-claude` | 管理工具（一般不用）|
 
 ### 3. 从其他终端连接(比较少用)
@@ -210,6 +212,8 @@ remote-claude attach <会话名>
 |------|------|
 | `cla` | 启动飞书客户端 + 以当前目录路径为会话名启动 Claude |
 | `cl` | 同 `cla`，但跳过权限确认 |
+| `cx` | 启动飞书客户端 + 以当前目录路径为会话名启动 Codex（跳过权限确认）|
+| `cdx` | 同 `cx`，但需要确认权限 |
 
 ### 管理命令 (一般不需要)
 
@@ -260,10 +264,12 @@ CLAUDE_COMMAND=/usr/local/bin/claude
 ## 系统要求
 
 - **操作系统**: macOS 或 Linux
-- **依赖工具**: [uv](https://docs.astral.sh/uv/)、[tmux](https://github.com/tmux/tmux)、[Claude CLI](https://claude.ai/code)
+- **依赖工具**: [uv](https://docs.astral.sh/uv/)、[tmux](https://github.com/tmux/tmux)
+- **CLI 工具**: [Claude CLI](https://claude.ai/code) 或 [Codex CLI](https://github.com/openai/codex)
 - **可选**: 飞书企业自建应用
 
 ## 文档
 
 - [CLAUDE.md](./CLAUDE.md) — 项目架构和开发说明
 - [LARK_CLIENT_GUIDE.md](./LARK_CLIENT_GUIDE.md) — 飞书客户端完整指南
+- [docker/README.md](./docker/README.md) — Docker 测试（npm 包发布前验证）

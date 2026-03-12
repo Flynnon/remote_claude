@@ -57,16 +57,55 @@ class RemoteClient:
     async def connect(self) -> bool:
         """连接到服务器"""
         if not self.socket_path.exists():
-            print(f"错误: 会话 '{self.session_name}' 不存在")
+            print(
+                f"❌ 错误: Socket 文件不存在\n"
+                f"   会话名: {self.session_name}\n"
+                f"   Socket 路径: {self.socket_path}\n"
+                f"\n"
+                f"   请使用 `python3 remote_claude.py list` 查看可用会话"
+            )
             return False
 
         try:
             self.reader, self.writer = await asyncio.open_unix_connection(
                 path=str(self.socket_path)
             )
+            print(f"✅ 已连接到会话: {self.session_name}")
             return True
+        except ConnectionRefusedError as e:
+            # 检查进程状态
+            from utils.session import list_active_sessions
+            sessions = list_active_sessions()
+            session_exists = any(s["name"] == self.session_name for s in sessions)
+
+            print(
+                f"❌ 连接失败: Connection refused\n"
+                f"   会话名: {self.session_name}\n"
+                f"   Socket 路径: {self.socket_path}\n"
+                f"   文件存在: {self.socket_path.exists()}\n"
+                f"   会话在列表中: {session_exists}\n"
+                f"\n"
+                f"   当前活跃会话:"
+            )
+            for s in sessions:
+                print(f"     - {s['name']} (PID: {s.get('pid', 'N/A')})")
+            print(
+                f"\n"
+                f"   可能原因:\n"
+                f"     1. Server 进程已终止但 Socket 文件残留\n"
+                f"     2. Socket 文件权限错误\n"
+                f"\n"
+                f"   建议操作:\n"
+                f"     python3 remote_claude.py kill {self.session_name}\n"
+                f"     python3 remote_claude.py start {self.session_name}"
+            )
+            return False
         except Exception as e:
-            print(f"连接失败: {e}")
+            print(
+                f"❌ 连接失败: {type(e).__name__}: {e}\n"
+                f"   会话名: {self.session_name}\n"
+                f"   Socket 路径: {self.socket_path}"
+            )
             return False
 
     async def run(self):

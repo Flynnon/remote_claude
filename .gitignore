@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+test-results/
 
 # 环境配置（含密钥）
 .env

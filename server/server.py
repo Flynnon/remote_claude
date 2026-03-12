@@ -42,6 +42,15 @@ from utils.session import (
 
 logger = logging.getLogger('Server')
 
+# Server 日志级别配置
+_SERVER_LOG_LEVEL = os.getenv("SERVER_LOG_LEVEL", "INFO").upper()
+SERVER_LOG_LEVEL_MAP = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}.get(_SERVER_LOG_LEVEL, logging.INFO)  # 默认 INFO
+
 # 加载用户 .env 配置（支持 CLAUDE_COMMAND 等）
 try:
     from dotenv import load_dotenv
@@ -57,6 +66,63 @@ except Exception:
 
 # 历史缓存大小（字节）
 HISTORY_BUFFER_SIZE = 100 * 1024  # 100KB
+
+
+# ── VirtualScreen：将 HistoryScreen.history.top + buffer 合并为统一视图 ──────
+
+class _VirtualBuffer:
+    """统一访问接口：history rows [0..offset) + screen.buffer [offset..offset+lines)"""
+    __slots__ = ('_history', '_buffer', '_offset')
+
+    def __init__(self, history, buffer, offset):
+        self._history = history   # list[dict]，来自 list(screen.history.top)
+        self._buffer = buffer     # pyte screen.buffer
+        self._offset = offset     # len(history)
+
+    def __getitem__(self, row):
+        if row < self._offset:
+            return self._history[row]
+        return self._buffer[row - self._offset]
+
+
+class _VirtualCursor:
+    """模拟 pyte cursor，y 偏移 history 行数"""
+    __slots__ = ('y',)
+
+    def __init__(self, y: int):
+        self.y = y
+
+
+class VirtualScreen:
+    """HistoryScreen wrapper：将 history.top + buffer 合并为 parser 可直接读取的统一屏幕视图。
+
+    parser 无需任何修改：
+    - _split_regions 从 cursor.y+5 向上扫描找分割线，先找到当前屏幕中的分割线就停了
+    - output_rows 自然包含 history 中的行号（0 到 offset-1）
+    - _get_row_text/buffer[row] 通过 VirtualBuffer 透明返回对应行
+    """
+    __slots__ = ('_screen', '_history', '_offset')
+
+    def __init__(self, screen):
+        self._screen = screen
+        self._history = list(screen.history.top) if hasattr(screen, 'history') else []
+        self._offset = len(self._history)
+
+    @property
+    def columns(self):
+        return self._screen.columns
+
+    @property
+    def lines(self):
+        return self._offset + self._screen.lines
+
+    @property
+    def cursor(self):
+        return _VirtualCursor(self._offset + self._screen.cursor.y)
+
+    @property
+    def buffer(self):
+        return _VirtualBuffer(self._history, self._screen.buffer, self._offset)
 
 
 # ── 全量快照架构 ─────────────────────────────────────────────────────────────
@@ -120,17 +186,25 @@ class OutputWatcher:
         self._debug_verbose = debug_verbose  # --debug-verbose 开启后输出 indicator/repr 等诊断信息
         safe_name = _safe_filename(session_name)
         self._debug_file = f"/tmp/remote-claude/{safe_name}_messages.log"
+        # PTY 原始字节流日志（仅 --debug-screen 开启时使用）
+        self._raw_log_fd = None
+        if debug_screen:
+            raw_log_path = f"/tmp/remote-claude/{safe_name}_pty_raw.log"
+            try:
+                self._raw_log_fd = open(raw_log_path, "a", encoding="ascii", buffering=1)
+            except Exception:
+                pass
         # 持久化 pyte 渲染器：PTY 数据直接实时喂入，flush 时直接读 screen
         from rich_text_renderer import RichTextRenderer
-        self._renderer = RichTextRenderer(columns=cols, lines=rows)
+        self._renderer = RichTextRenderer(columns=cols, lines=rows, debug_stream=debug_screen)
         # 持久化解析器（跨帧保留 dot_row_cache）；由调用方注入（可插拔架构）
         import logging as _logging
         _logging.getLogger('ComponentParser').setLevel(_logging.DEBUG)
-        _blink_handler = _logging.FileHandler(
-            f"/tmp/remote-claude/{safe_name}_blink.log"
-        )
-        _blink_handler.setFormatter(_logging.Formatter('%(asctime)s %(message)s', '%H:%M:%S'))
-        _logging.getLogger('ComponentParser').addHandler(_blink_handler)
+        # 创建专用 logger 替换直接文件写入
+        self._blink_logger = _logging.getLogger(f'OutputWatcher.{self._session_name}.blink')
+        self._blink_logger.setLevel(_logging.DEBUG)
+        self._flush_logger = _logging.getLogger(f'OutputWatcher.{self._session_name}.flush')
+        self._flush_logger.setLevel(_logging.DEBUG)
         if parser is None:
             from parsers import ClaudeParser
             parser = ClaudeParser()
@@ -166,6 +240,15 @@ class OutputWatcher:
         # 诊断日志：记录 PTY 数据到达
         if data:
             logger.debug(f"[diag-feed] len={len(data)} data={data[:50]!r}")
+        # 改动3：--debug-screen 开启时追加原始字节到 _pty_raw.log（base64 编码）
+        if self._raw_log_fd is not None and data:
+            try:
+                import base64 as _b64
+                ts = time.strftime('%H:%M:%S') + f'.{int(time.time() * 1000) % 1000:03d}'
+                encoded = _b64.b64encode(data).decode('ascii')
+                self._raw_log_fd.write(f"{ts} len={len(data)} {encoded}\n")
+            except Exception:
+                pass
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -208,8 +291,10 @@ class OutputWatcher:
                 self._write_screen_debug(self._renderer.screen)
             t1 = time.time()
 
-            # 1. 解析（ScreenParser 不改；pyte 已在 feed() 里实时更新）
-            components = self._parser.parse(self._renderer.screen)
+            # 1. 构建 VirtualScreen（history.top + buffer）并解析
+            # _write_screen_debug 仍用原始 screen（只写当前帧快照，不含 history）
+            vscreen = VirtualScreen(self._renderer.screen)
+            components = self._parser.parse(vscreen)
             input_text = self._parser.last_input_text
             input_ansi_text = self._parser.last_input_ansi_text
 
@@ -247,10 +332,10 @@ class OutputWatcher:
                     last_ob_blink = b.is_streaming
                     last_ob_content = b.content[:40]
                     last_ob_start_row = b.start_row
-                    # 直接读 pyte screen buffer 获取原始字符属性（用于变化检测）
+                    # 读 vscreen.buffer 获取原始字符属性（支持 history 行）
                     if b.start_row >= 0:
                         try:
-                            char = self._renderer.screen.buffer[b.start_row][0]
+                            char = vscreen.buffer[b.start_row][0]
                             last_ob_indicator_char = str(getattr(char, 'data', ''))
                             last_ob_indicator_fg = str(getattr(char, 'fg', ''))
                             last_ob_indicator_bold = bool(getattr(char, 'bold', False))
@@ -258,11 +343,7 @@ class OutputWatcher:
                             pass
                     break
             if last_ob_blink:
-                _blink_log = open(f"/tmp/remote-claude/{self._session_name}_blink.log", "a")
-                _blink_log.write(
-                    f"[{time.strftime('%H:%M:%S')}] raw-blink  last_ob={last_ob_content!r}\n"
-                )
-                _blink_log.close()
+                self._blink_logger.debug(f"raw-blink  last_ob={last_ob_content!r}")
 
             self._frame_window.append(_FrameObs(
                 ts=now,
@@ -308,27 +389,23 @@ class OutputWatcher:
                     if len(chars) > 1 or len(fgs) > 1 or len(bolds) > 1:
                         window_block_active = True
                         # 记录字符变化触发原因
-                        _blink_log = open(f"/tmp/remote-claude/{self._session_name}_blink.log", "a")
-                        _blink_log.write(
-                            f"[{time.strftime('%H:%M:%S')}] char-change row={last_ob_start_row}"
-                            f"  chars={chars}  fgs={fgs}  bolds={bolds}\n"
+                        self._blink_logger.debug(
+                            f"char-change row={last_ob_start_row}"
+                            f"  chars={chars}  fgs={fgs}  bolds={bolds}"
                         )
-                        _blink_log.close()
 
             if window_block_active:
                 for b in reversed(visible_blocks):
                     if isinstance(b, OutputBlock):
-                        _blink_log = open(f"/tmp/remote-claude/{self._session_name}_blink.log", "a")
-                        _blink_log.write(
-                            f"[{time.strftime('%H:%M:%S')}] win-smooth last_ob={b.content[:40]!r}"
+                        self._blink_logger.debug(
+                            f"win-smooth last_ob={b.content[:40]!r}"
                             f"  window_frames={len(window_list)}"
-                            f"  blink_frames={sum(1 for o in window_list if o.block_blink)}\n"
+                            f"  blink_frames={sum(1 for o in window_list if o.block_blink)}"
                         )
-                        _blink_log.close()
                         b.is_streaming = True
                         break
 
-            # 5. 直接使用 visible_blocks（pyte 2000 行已保留全部历史）
+            # 5. 直接使用 visible_blocks（VirtualScreen 已包含 history.top + 当前屏幕）
             all_blocks = visible_blocks
 
             # 5b. 后台 agent 摘要：BottomBar 有 agent 信息但面板未展开时，
@@ -373,13 +450,12 @@ class OutputWatcher:
                 self._on_snapshot(window)
             t4 = time.time()
 
-            with open(f"/tmp/remote-claude/{_safe_filename(self._session_name)}_flush.log", "a") as _f:
-                _f.write(
-                    f"[flush] screen_log={1000*(t1-t0):.1f}ms  parse={1000*(t2-t1):.1f}ms  "
-                    f"msg_log={1000*(t3-t2):.1f}ms  snapshot={1000*(t4-t3):.1f}ms  "
-                    f"total={1000*(t4-t0):.1f}ms  rows={self._rows}\n"
-                    f"  └─ {self._parser.last_parse_timing}\n"
-                )
+            self._flush_logger.debug(
+                f"[flush] screen_log={1000*(t1-t0):.1f}ms  parse={1000*(t2-t1):.1f}ms  "
+                f"msg_log={1000*(t3-t2):.1f}ms  snapshot={1000*(t4-t3):.1f}ms  "
+                f"total={1000*(t4-t0):.1f}ms  rows={self._rows}\n"
+                f"  └─ {self._parser.last_parse_timing}"
+            )
 
         except Exception as e:
             print(f"[OutputWatcher] flush 失败: {e}")
@@ -513,8 +589,80 @@ class OutputWatcher:
         except Exception:
             pass
 
+    @staticmethod
+    def _char_to_ansi(char) -> str:
+        """将 pyte Char 的颜色/样式属性转为 ANSI SGR 前缀序列。
+
+        返回带 ANSI 转义的字符字符串，调用方需在行尾追加 \\033[0m 重置。
+        仅在属性非默认时才输出对应 SGR，降低输出体积。
+        """
+        # 标准颜色名到 ANSI 码
+        _FG_NAMES = {
+            'black': 30, 'red': 31, 'green': 32, 'yellow': 33,
+            'blue': 34, 'magenta': 35, 'cyan': 36, 'white': 37,
+            'brown': 33,  # pyte 把 ANSI 33 解析为 brown
+        }
+        _BG_NAMES = {
+            'black': 40, 'red': 41, 'green': 42, 'yellow': 43,
+            'blue': 44, 'magenta': 45, 'cyan': 46, 'white': 47,
+            'brown': 43,
+        }
+        _BRIGHT_FG = {
+            'brightblack': 90, 'brightred': 91, 'brightgreen': 92, 'brightyellow': 93,
+            'brightblue': 94, 'brightmagenta': 95, 'brightcyan': 96, 'brightwhite': 97,
+        }
+        _BRIGHT_BG = {
+            'brightblack': 100, 'brightred': 101, 'brightgreen': 102, 'brightyellow': 103,
+            'brightblue': 104, 'brightmagenta': 105, 'brightcyan': 106, 'brightwhite': 107,
+        }
+
+        sgr = []
+
+        # bold / blink
+        if getattr(char, 'bold', False):
+            sgr.append('1')
+        if getattr(char, 'blink', False):
+            sgr.append('5')
+
+        # 前景色
+        fg = getattr(char, 'fg', 'default')
+        if fg and fg != 'default':
+            fg_low = str(fg).lower()
+            if fg_low in _FG_NAMES:
+                sgr.append(str(_FG_NAMES[fg_low]))
+            elif fg_low in _BRIGHT_FG:
+                sgr.append(str(_BRIGHT_FG[fg_low]))
+            elif len(fg_low) == 6 and all(c in '0123456789abcdef' for c in fg_low):
+                # 24-bit true color
+                r = int(fg_low[0:2], 16)
+                g = int(fg_low[2:4], 16)
+                b = int(fg_low[4:6], 16)
+                sgr.append(f'38;2;{r};{g};{b}')
+
+        # 背景色
+        bg = getattr(char, 'bg', 'default')
+        if bg and bg != 'default':
+            bg_low = str(bg).lower()
+            if bg_low in _BG_NAMES:
+                sgr.append(str(_BG_NAMES[bg_low]))
+            elif bg_low in _BRIGHT_BG:
+                sgr.append(str(_BRIGHT_BG[bg_low]))
+            elif len(bg_low) == 6 and all(c in '0123456789abcdef' for c in bg_low):
+                r = int(bg_low[0:2], 16)
+                g = int(bg_low[2:4], 16)
+                b = int(bg_low[4:6], 16)
+                sgr.append(f'48;2;{r};{g};{b}')
+
+        if sgr:
+            return f'\033[{";".join(sgr)}m{char.data}\033[0m'
+        return char.data
+
     def _write_screen_debug(self, screen):
-        """将 pyte 屏幕内容写入调试文件（_screen.log）"""
+        """将 pyte 屏幕内容写入调试文件（_screen.log）
+
+        每个字符的 fg/bg 颜色通过 ANSI SGR 序列直接嵌入，
+        cat _screen.log 即可在终端看到与 pyte 渲染一致的着色效果。
+        """
         base = f"/tmp/remote-claude/{_safe_filename(self._session_name)}"
         try:
             # pyte 屏幕快照（覆盖写，只保留最新一帧）
@@ -526,20 +674,51 @@ class OutputWatcher:
                 "",
             ]
             for row in range(scan_limit + 1):
-                buf = [' '] * screen.columns
-                for col, char in screen.buffer[row].items():
-                    buf[col] = char.data
-                rstripped = ''.join(buf).rstrip()
-                if not rstripped:
-                    lines.append(f"{row:3d} |")
+                # 构建带颜色的行内容（用于终端直接 cat 显示）
+                colored_buf = []
+                plain_buf = [' '] * screen.columns
+                for col in range(screen.columns):
+                    char = screen.buffer[row].get(col)
+                    if char is None:
+                        colored_buf.append(' ')
+                        continue
+                    plain_buf[col] = char.data
+                    colored_buf.append(self._char_to_ansi(char))
+
+                rstripped_plain = ''.join(plain_buf).rstrip()
+                if not rstripped_plain:
+                    # 检查是否有背景色（对 Codex 背景色分割线很重要）
+                    row_bgs = set()
+                    for col in range(screen.columns):
+                        char = screen.buffer[row].get(col)
+                        if char is not None:
+                            bg = getattr(char, 'bg', 'default')
+                            if bg and bg != 'default':
+                                row_bgs.add(str(bg))
+                    if row_bgs:
+                        bg_str = ','.join(sorted(row_bgs))
+                        lines.append(f"{row:3d} |[bg:{bg_str} ···]")
+                    else:
+                        lines.append(f"{row:3d} |")
                     continue
+
                 try:
                     c0 = screen.buffer[row][0]
                     col0_blink = getattr(c0, "blink", False)
                 except (KeyError, IndexError):
                     col0_blink = False
+
                 blink_mark = "B" if col0_blink else " "
-                lines.append(f"{row:3d}{blink_mark}|{rstripped}")
+                # rstrip 着色内容：找最后一个有内容的列号（正确处理 CJK 占 2 列的情况）
+                # plain_buf 按列号索引，len(rstripped_plain) 会因 CJK 字符导致列数偏小
+                last_col = 0
+                for col in range(screen.columns - 1, -1, -1):
+                    if plain_buf[col] != ' ':
+                        last_col = col + 1
+                        break
+                colored_line = ''.join(colored_buf[:last_col])
+                lines.append(f"{row:3d}{blink_mark}|{colored_line}")
+
             with open(screen_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
         except Exception:
@@ -698,13 +877,16 @@ class ProxyServer:
         # 启动 PTY 读取任务
         asyncio.create_task(self._read_pty())
 
+        # 切换到运行阶段日志
+        self._switch_to_runtime_logging()
+
         # 等待服务器关闭
         async with self.server:
             await self.server.serve_forever()
 
     # PTY 终端尺寸：与 lark_client 的 pyte 渲染器保持一致
     PTY_COLS = 220
-    PTY_ROWS = 2000
+    PTY_ROWS = 100  # 行数缩减至 100，历史内容通过 HistoryScreen.history.top 保存（5000 行容量）
 
     def _get_parser(self):
         """根据 cli_type 返回对应的解析器实例"""
@@ -712,6 +894,55 @@ class ProxyServer:
         if self.cli_type == "codex":
             return CodexParser()
         return ClaudeParser()
+
+    def _switch_to_runtime_logging(self):
+        """从启动日志切换到运行阶段日志"""
+        root_logger = logging.getLogger()
+
+        # 移除启动日志 handler（保留 stdout handler）
+        for handler in root_logger.handlers[:]:
+            if isinstance(handler, logging.FileHandler) and \
+               not hasattr(handler, '_runtime_handler') and \
+               not hasattr(handler, '_debug_handler'):
+                root_logger.removeHandler(handler)
+
+        # 重定向 sys.stderr 到 ~/.remote-claude/server.error.log
+        # 注意：这不会影响外层的 2>> startup.log，但 Python 的 stderr 输出会走这里
+        # 适用于：print(..., file=sys.stderr)、logging 的 StreamHandler 等
+        # 不适用于：C 扩展模块直接写文件描述符 2、解释器崩溃等底层错误
+        error_log_path = os.path.expanduser('~/.remote-claude/server.error.log')
+        sys.stderr = open(error_log_path, 'w', encoding='utf-8')
+        logger.info(f"已重定向 stderr 到 {error_log_path}")
+
+        # 添加运行阶段日志文件
+        safe_name = _safe_filename(self.session_name)
+        runtime_handler = logging.FileHandler(
+            f"{SOCKET_DIR}/{safe_name}_server.log",
+            encoding="utf-8"
+        )
+        runtime_handler.setFormatter(logging.Formatter(
+            "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        runtime_handler._runtime_handler = True  # 标记，方便后续清理
+        root_logger.addHandler(runtime_handler)
+
+        # DEBUG 级别时额外记录调试日志到独立文件
+        if SERVER_LOG_LEVEL_MAP == logging.DEBUG:
+            debug_handler = logging.FileHandler(
+                f"{SOCKET_DIR}/{safe_name}_debug.log",
+                encoding="utf-8"
+            )
+            debug_handler.setLevel(logging.DEBUG)
+            debug_handler.setFormatter(logging.Formatter(
+                "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"
+            ))
+            debug_handler._debug_handler = True  # 标记，方便后续清理
+            root_logger.addHandler(debug_handler)
+            logger.info(f"已启用 DEBUG 日志: {safe_name}_debug.log")
+
+        logger.info(f"日志已切换到运行阶段: {safe_name}_server.log")
 
     def _get_effective_cmd(self) -> str:
         """根据 cli_type 返回实际执行的命令（codex 时使用 'codex'，否则用 claude_cmd）"""
@@ -913,7 +1144,7 @@ class ProxyServer:
         """处理终端大小变化：同步更新 PTY 和 pyte 渲染尺寸，清空 raw buffer。
         Claude 收到 SIGWINCH 后会全屏重绘，buffer 清空后自然恢复为新尺寸的完整屏幕数据。"""
         try:
-            # output_watcher 的 rows 固定为 PTY_ROWS（2000），不跟随客户端终端尺寸变化
+            # output_watcher 的 rows 固定为 PTY_ROWS（100），不跟随客户端终端尺寸变化
             # terminal client 直接渲染 PTY 原始输出，不依赖 output_watcher，无需同步 rows
             self.output_watcher.resize(msg.cols, self.PTY_ROWS)
             winsize = struct.pack('HHHH', msg.rows, msg.cols, 0, 0)
@@ -998,19 +1229,26 @@ if __name__ == "__main__":
                         help="debug 日志输出完整诊断信息（indicator、repr 等）")
     args = parser.parse_args()
 
-    # 配置日志：写文件（供故障诊断）+ stdout（供 tmux attach 时查看）
-    from utils.session import USER_DATA_DIR
+    # 配置日志：启动阶段输出到 stdout + startup.log
+    from utils.session import USER_DATA_DIR, _safe_filename
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _log_path = USER_DATA_DIR / "startup.log"
+
+    # 先配置基本输出（stdout）
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.FileHandler(_log_path, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
+
+    # 添加启动日志 handler
+    startup_handler = logging.FileHandler(USER_DATA_DIR / "startup.log", encoding="utf-8")
+    startup_handler.setFormatter(logging.Formatter(
+        "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    startup_handler._startup_handler = True  # 标记为启动日志 handler
+    logging.getLogger().addHandler(startup_handler)
 
     claude_cmd = os.environ.get("CLAUDE_COMMAND", "claude")
     logger.info(f"CLAUDE_COMMAND={claude_cmd!r}")

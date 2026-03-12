@@ -40,6 +40,11 @@ setup_path() {
     # 不存在则创建
     [[ -f "$PROFILE" ]] || touch "$PROFILE"
 
+    # 未写入 source .bashrc 则追加
+    if ! grep -qF '.bashrc' "$PROFILE" 2>/dev/null; then
+        echo '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' >> "$PROFILE"
+    fi
+
     # 未写入则追加
     if ! grep -qF '$HOME/.local/bin' "$PROFILE" 2>/dev/null; then
         echo "" >> "$PROFILE"
@@ -158,6 +163,19 @@ check_uv() {
 # 检查并安装 tmux（要求 3.6+）
 check_tmux() {
     print_header "检查 tmux"
+
+    # CI 模式：跳过 tmux 版本检查（Docker 环境可能没有 sudo）
+    if [ "$CI_MODE" = "true" ]; then
+        if command -v tmux &> /dev/null; then
+            TMUX_VERSION=$(tmux -V)
+            print_success "$TMUX_VERSION 已安装（CI 模式跳过版本检查）"
+            return
+        else
+            print_error "未找到 tmux"
+            WARNINGS+=("tmux 未安装，CI 模式跳过版本检查")
+            return
+        fi
+    fi
 
     REQUIRED_MAJOR=3
     REQUIRED_MINOR=6
@@ -350,6 +368,26 @@ check_claude() {
     fi
 }
 
+# 检查 Codex CLI
+check_codex() {
+    print_header "检查 Codex CLI"
+
+    if command -v codex &> /dev/null; then
+        print_success "Codex CLI 已安装"
+        return
+    fi
+
+    print_warning "未找到 Codex CLI"
+    print_info "请运行以下命令安装 Codex CLI："
+    print_info "  npm install -g @openai/codex"
+    print_info "或访问 https://github.com/openai/codex 了解更多"
+
+    if $NPM_MODE; then
+        print_info "（npm 模式：跳过交互，请安装后重新运行）"
+        return
+    fi
+}
+
 # 安装 Python 依赖
 install_dependencies() {
     print_header "安装 Python 依赖"
@@ -449,7 +487,7 @@ configure_shell() {
     print_header "安装快捷命令"
 
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    chmod +x "$SCRIPT_DIR/bin/cla" "$SCRIPT_DIR/bin/cl" "$SCRIPT_DIR/bin/remote-claude" 2>/dev/null || true
+    chmod +x "$SCRIPT_DIR/bin/cla" "$SCRIPT_DIR/bin/cl" "$SCRIPT_DIR/bin/cx" "$SCRIPT_DIR/bin/cdx" "$SCRIPT_DIR/bin/remote-claude" 2>/dev/null || true
 
     # 优先 /usr/local/bin，权限不够则选 ~/bin 或 ~/.local/bin 中已在 PATH 里的
     BIN_DIR="/usr/local/bin"
@@ -479,15 +517,21 @@ configure_shell() {
         mkdir -p "$BIN_DIR"
         ln -sf "$SCRIPT_DIR/bin/cla"           "$BIN_DIR/cla"          2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
+        ln -sf "$SCRIPT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
+        ln -sf "$SCRIPT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
     else
         ln -sf "$SCRIPT_DIR/bin/cl"            "$BIN_DIR/cl"           2>/dev/null || true
+        ln -sf "$SCRIPT_DIR/bin/cx"            "$BIN_DIR/cx"           2>/dev/null || true
+        ln -sf "$SCRIPT_DIR/bin/cdx"           "$BIN_DIR/cdx"          2>/dev/null || true
         ln -sf "$SCRIPT_DIR/bin/remote-claude" "$BIN_DIR/remote-claude" 2>/dev/null || true
     fi
 
-    print_success "已安装 cla、cl 和 remote-claude 到 $BIN_DIR"
+    print_success "已安装 cla、cl、cx、cdx 和 remote-claude 到 $BIN_DIR"
     print_info "  cla           - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Claude"
     print_info "  cl            - 同 cla，但跳过权限确认"
+    print_info "  cx            - 启动飞书客户端 + 以当前目录路径+时间戳为会话名启动 Codex（跳过权限）"
+    print_info "  cdx           - 同 cx，但需确认权限"
     print_info "  remote-claude - Remote Claude 主命令（start/attach/list/kill/lark）"
 
     # 安装 shell 自动补全
@@ -536,6 +580,8 @@ ${YELLOW}快捷命令：${NC}
 
   ${GREEN}cla${NC}  - 启动飞书客户端 + 以当前目录+时间戳为会话名启动 Claude
   ${GREEN}cl${NC}   - 同 cla，但跳过权限确认
+  ${GREEN}cx${NC}   - 启动飞书客户端 + 以当前目录+时间戳为会话名启动 Codex（跳过权限）
+  ${GREEN}cdx${NC}  - 同 cx，但需确认权限
 
 详细使用说明请阅读 README.md
 
@@ -553,6 +599,11 @@ main() {
         [[ "$arg" == "--npm" ]] && NPM_MODE=true
     done
 
+    # CI 模式：跳过 tmux 版本检查（CI 环境可能没有 sudo）
+    if [ -n "$CI" ]; then
+        export CI_MODE=true
+    fi
+
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}   Remote Claude 初始化脚本${NC}"
@@ -565,6 +616,7 @@ main() {
     check_uv
     check_tmux
     check_claude
+    check_codex
     install_dependencies
     if ! $NPM_MODE; then
         configure_lark

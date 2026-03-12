@@ -21,8 +21,18 @@ if [ "$1" = "log" ]; then
         SESSION_SAFE=$(echo "$2" | tr '/.' '__')
         LOG_FILE="$LOG_DIR/${SESSION_SAFE}_messages.log"
     else
-        # 找最后启动的 session（最新的 session .pid 文件，排除 lark.pid）
-        LATEST_PID=$(ls -t "$LOG_DIR"/_*.pid 2>/dev/null | head -1)
+        # 找最后启动的 session（按创建时间排序，排除 lark.pid）
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS: stat -f "%B" 返回创建时间（秒）
+            LATEST_PID=$(ls "$LOG_DIR"/_*.pid 2>/dev/null | while read f; do
+                stat -f "%B:%N" "$f" 2>/dev/null
+            done | sort -rn | head -1 | cut -d: -f2)
+        else
+            # Linux: stat -c "%W" 返回创建时间（秒）
+            LATEST_PID=$(ls "$LOG_DIR"/_*.pid 2>/dev/null | while read f; do
+                stat -c "%W:%N" "$f" 2>/dev/null
+            done | sort -rn | head -1 | cut -d: -f2)
+        fi
         if [ -n "$LATEST_PID" ]; then
             SESSION_SAFE=$(basename "$LATEST_PID" .pid)
             LOG_FILE="$LOG_DIR/${SESSION_SAFE}_messages.log"

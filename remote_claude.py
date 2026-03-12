@@ -3,11 +3,14 @@
 Remote Claude - 双端共享 Claude CLI 工具
 
 命令:
-  start <name>   启动新会话（在 tmux 中）
-  attach <name>  连接到已有会话
-  list           列出所有会话
-  kill <name>    终止会话
-  lark           飞书客户端管理（start/stop/restart/status）
+  start <name>       启动新会话（在 tmux 中）
+  attach <name>      连接到已有会话
+  list               列出所有会话
+  kill <name>        终止会话
+  status <name>      显示会话状态
+  lark               飞书客户端管理（start/stop/restart/status）
+  stats              查看使用统计
+  update             更新 remote-claude 到最新版本
 """
 
 import argparse
@@ -183,16 +186,29 @@ def cmd_list(args):
         print("没有活跃的会话")
         return 0
 
+    # ANSI 颜色码
+    YELLOW = "\033[33m"
+    GREEN = "\033[32m"
+    RESET = "\033[0m"
+
     print("活跃会话:")
-    print("-" * 60)
-    print(f"{'名称':<20} {'PID':<10} {'tmux':<10} {'Socket'}")
-    print("-" * 60)
+    print("-" * 50)
+    print(f"{'类型':<8} {'PID':<10} {'tmux':<10} {'名称'}")
+    print("-" * 50)
 
     for s in sessions:
         tmux_status = "是" if s["tmux"] else "否"
-        print(f"{s['name']:<20} {s['pid']:<10} {tmux_status:<10} {s['socket']}")
+        cli_type = s.get('cli_type', 'claude')
+        # 根据类型选择颜色
+        if cli_type == 'codex':
+            cli_colored = f"{GREEN}{cli_type}{RESET}"
+        else:
+            cli_colored = f"{YELLOW}{cli_type}{RESET}"
+        # 带颜色的字段需要单独计算宽度
+        padding = " " * (8 - len(cli_type))
+        print(f"{cli_colored}{padding} {s['pid']:<10} {tmux_status:<10} {s['name']}")
 
-    print("-" * 60)
+    print("-" * 50)
     print(f"共 {len(sessions)} 个会话")
 
     return 0
@@ -483,9 +499,11 @@ def main():
         epilog="""
 示例:
   %(prog)s start mywork              启动名为 mywork 的会话
+  %(prog)s start mywork --cli codex  启动 codex 会话
   %(prog)s attach mywork             连接到 mywork 会话
   %(prog)s list                      列出所有会话
   %(prog)s kill mywork               终止 mywork 会话
+  %(prog)s status mywork             显示 mywork 会话状态
 
 飞书客户端:
   %(prog)s lark start                启动飞书客户端
@@ -508,6 +526,9 @@ def main():
   %(prog)s stats --detail            详细分类
   %(prog)s stats --session mywork    按会话筛选
   %(prog)s stats --reset             清空数据
+
+更新:
+  %(prog)s update                    更新到最新版本
 """
     )
 
@@ -615,11 +636,15 @@ def main():
     update_parser = subparsers.add_parser("update", help="更新 remote-claude 到最新版本")
     update_parser.set_defaults(func=cmd_update)
 
-    args = parser.parse_args()
+    args, remaining = parser.parse_known_args()
 
     if args.command is None:
         parser.print_help()
         return 0
+
+    # 将剩余参数合并到 claude_args（支持 cx/cdx 脚本中使用 -- 分隔符）
+    if args.command == "start" and hasattr(args, 'claude_args'):
+        args.claude_args = args.claude_args + remaining
 
     return args.func(args)
 

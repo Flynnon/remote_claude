@@ -99,7 +99,15 @@ def tmux_create_session(session_name: str, command: str, detached: bool = True) 
     if detached:
         args.append("-d")
     args.extend(["-x", "200", "-y", "50"])  # 默认大小
-    args.append(command)
+
+    # 将 stderr 重定向到 startup.log，捕获 Python 启动错误（如 ModuleNotFoundError）
+    # startup.log 位于 ~/.remote-claude/startup.log
+    startup_log = USER_DATA_DIR / "startup.log"
+    startup_log.parent.mkdir(parents=True, exist_ok=True)
+    # 直接在命令末尾添加重定向，使用 str(startup_log) 确保路径正确展开
+    command_with_stderr = f"{command} 2>> {startup_log}"
+
+    args.append(command_with_stderr)
 
     import logging as _logging
     _logging.getLogger('Start').info(f"tmux_cmd: {' '.join(args)}")
@@ -223,10 +231,30 @@ def list_active_sessions() -> List[dict]:
                 import datetime
                 try:
                     mtime = pid_file.stat().st_mtime
-                    start_time = datetime.datetime.fromtimestamp(mtime).strftime("%H:%M")
+                    start_time = datetime.datetime.fromtimestamp(mtime).strftime("%m-%d %H:%M")
                 except OSError:
                     mtime = 0
                     start_time = "?"
+
+                # 读取 .mq 文件获取 cli_type（避免循环导入，在函数内导入）
+                try:
+                    import sys
+                    from pathlib import Path
+                    import logging
+                    project_root = str(Path(__file__).parent.parent)
+                    if project_root not in sys.path:
+                        sys.path.insert(0, project_root)
+                    from server.shared_state import SharedStateReader
+                    reader = SharedStateReader(session_name)
+                    snapshot = reader.read()
+                    cli_type = snapshot.get("cli_type", "claude")
+                except Exception as e:
+                    # 添加详细日志记录，便于诊断问题
+                    import logging
+                    logger = logging.getLogger('Session')
+                    logger.warning(f"读取共享内存 cli_type 失败: session={session_name}, error={e}")
+                    cli_type = "claude"  # 读取失败时使用默认值
+
                 sessions.append({
                     "name": session_name,
                     "socket": str(sock_file),
@@ -234,7 +262,8 @@ def list_active_sessions() -> List[dict]:
                     "cwd": cwd or "",
                     "start_time": start_time,
                     "mtime": mtime,
-                    "tmux": tmux_session_exists(session_name)
+                    "tmux": tmux_session_exists(session_name),
+                    "cli_type": cli_type
                 })
             except (ProcessLookupError, ValueError, OSError):
                 # 进程不存在或文件被并发清理，清理残留文件

@@ -12,16 +12,60 @@ import signal
 import sys
 from pathlib import Path
 
+
+# 设置 sys.path 以导入 utils 模块
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from utils.session import USER_DATA_DIR
+
+
+def _setup_logging():
+    """配置 lark_client 日志：INFO → lark_client.log, DEBUG → lark_client.debug.log"""
+    from .config import LARK_LOG_LEVEL
+
+    log_dir = USER_DATA_DIR
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # 日志格式（含毫秒级时间戳）
+    log_format = "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(log_format, datefmt=date_format)
+
+    # 根 logger 配置
+    root_logger = logging.getLogger()
+    root_logger.setLevel(LARK_LOG_LEVEL)
+
+    # 清除默认 handler
+    root_logger.handlers.clear()
+
+    # 正常日志文件（INFO 及以上）
+    info_handler = logging.FileHandler(log_dir / "lark_client.log", encoding="utf-8")
+    info_handler.setLevel(logging.INFO)
+    info_handler.setFormatter(formatter)
+    root_logger.addHandler(info_handler)
+
+    # 调试日志文件（DEBUG 及以上，仅当 LARK_LOG_LEVEL=DEBUG 时写入）
+    if LARK_LOG_LEVEL == logging.DEBUG:
+        debug_handler = logging.FileHandler(log_dir / "lark_client.debug.log", encoding="utf-8")
+        debug_handler.setLevel(logging.DEBUG)
+        debug_handler.setFormatter(formatter)
+        root_logger.addHandler(debug_handler)
+
+    # 第三方库保持 INFO 级别
+    for _noisy in ('urllib3', 'websockets', 'asyncio'):
+        logging.getLogger(_noisy).setLevel(logging.INFO)
+
+    # 控制台输出（仅重要消息，无调试信息）
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+
+# 在导入 lark SDK 之前配置日志
+_setup_logging()
+
 import lark_oapi as lark
 
-# 在 SDK 配置 logging 之前，先设置根 logger 和我们自己模块的 DEBUG 级别
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='[%(name)s] %(message)s',
-)
-# 将噪音较大的第三方库保持 INFO 级别
-for _noisy in ('urllib3', 'websockets', 'asyncio'):
-    logging.getLogger(_noisy).setLevel(logging.INFO)
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger, P2CardActionTriggerResponse, CallBackToast

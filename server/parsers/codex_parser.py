@@ -34,6 +34,7 @@ STAR_CHARS: Set[str] = set(
     '✢✣✤✥✦✧'
     '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     '△'    # Codex 系统警告（不闪烁 → SystemBlock）
+    '⚠'    # Codex 警告（不闪烁 → SystemBlock）
 )
 
 # 圆点字符集（OutputBlock 首列）
@@ -254,6 +255,76 @@ def _get_col0_ansi(screen: pyte.Screen, row: int) -> str:
 
 # ─── 屏幕行工具函数 ────────────────────────────────────────────────────────────
 
+def _is_bright_color(color: str) -> bool:
+    """判断 ANSI 颜色是否为亮色。
+
+    亮色判定逻辑：
+    - 标准 bright colors (ANSI 90-97)：直接判定为亮色
+    - 标准 colors (ANSI 30-37)：判定为暗色
+    - 颜色名含 'bright'：判定为亮色
+    - 6 位 hex 颜色：通过亮度公式判断（L > 128）
+    - 'default'：非亮色
+
+    注意：暗色用于历史 InputBlock，需要排除。
+    """
+    if not color or color == 'default':
+        return False
+
+    # 颜色名：直接判断是否含 'bright'
+    key = color.lower().replace(' ', '').replace('-', '')
+    if 'bright' in key:
+        return True
+    # 标准 colors（ANSI 30-37）是暗色
+    if key in _FG_NAME_TO_SGR:
+        sgr = _FG_NAME_TO_SGR[key]
+        return 90 <= sgr <= 97  # 90-97 是 bright colors
+
+    # 6 位 hex 颜色：计算亮度
+    if len(color) == 6:
+        try:
+            r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+            # 亮度公式：L = 0.2126*R + 0.7152*G + 0.0722*B
+            brightness = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            return brightness > 128
+        except ValueError:
+            pass
+
+    # 默认判定为亮色（非标准暗色即为亮色）
+    return True
+
+
+def _is_lit_prompt_row(screen: pyte.Screen, row: int) -> bool:
+    """判断是否为亮起来的 › 行（输入区域首行）。
+
+    条件：
+    1. 行首是 ›（CODEX_PROMPT_CHARS）
+    2. 首字符前景色是亮色（非 default 且非暗色）
+    3. 上一行、当前行、下一行都有整行背景色（严格检查，缺一行则失败）
+    """
+    # 检查行首是 ›
+    if _get_col0(screen, row) not in CODEX_PROMPT_CHARS:
+        return False
+
+    # 检查首字符前景色是亮色
+    try:
+        char = screen.buffer[row][0]
+        fg = getattr(char, 'fg', 'default') or 'default'
+        if not _is_bright_color(fg):
+            return False  # 前景色不是亮色（可能是暗色或 default）
+    except (KeyError, IndexError):
+        return False
+
+    # 严格检查：上一行、当前行、下一行都必须有整行背景色
+    if not _has_full_row_bg(screen, row):
+        return False
+    if row == 0 or not _has_full_row_bg(screen, row - 1):
+        return False
+    if row >= screen.lines - 1 or not _has_full_row_bg(screen, row + 1):
+        return False
+
+    return True
+
+
 def _get_row_text(screen: pyte.Screen, row: int) -> str:
     """提取指定行完整文本（rstrip 去尾部空格）。
     预分配空格列表后按 dict 实际内容覆写，避免逐列触发 defaultdict。"""
@@ -302,6 +373,46 @@ def _is_bg_divider_row(screen: pyte.Screen, row: int) -> bool:
     if _get_row_dominant_bg(screen, row) == 'default':
         return False
     return _get_row_text(screen, row).strip() == ''
+
+
+def _has_row_bg(screen: pyte.Screen, row: int) -> bool:
+    """判断整行是否有非默认背景色（包括空格）。
+
+    与 _get_row_dominant_bg 不同的是：
+    - _get_row_dominant_bg 只统计有实际字符的背景色
+    - _has_row_bg 检测整行所有列的背景色（包括空格）
+
+    用于检测背景色分割线（只有背景色但无文字的行）。
+    """
+    for col in range(screen.columns):
+        try:
+            char = screen.buffer[row][col]
+            bg = getattr(char, 'bg', 'default') or 'default'
+            if bg != 'default':
+                return True
+        except (KeyError, IndexError):
+            continue
+    return False
+
+
+def _has_full_row_bg(screen: pyte.Screen, row: int) -> bool:
+    """判断整行是否都有非默认背景色（严格模式）。
+
+    与 _has_row_bg 不同的是：
+    - _has_row_bg：只要有一列有非默认背景色就返回 True
+    - _has_full_row_bg：要求整行所有列都有非默认背景色
+
+    用于检测输入区域的背景色分割线（整行都有背景色）。
+    """
+    for col in range(screen.columns):
+        try:
+            char = screen.buffer[row][col]
+            bg = getattr(char, 'bg', 'default') or 'default'
+            if bg == 'default':
+                return False
+        except (KeyError, IndexError):
+            return False
+    return True
 
 
 def _get_row_dominant_bg(screen: pyte.Screen, row: int) -> str:
@@ -534,7 +645,10 @@ class CodexParser(BaseParser):
 
         优先级：
           1. 背景色分割线（强）：从下往上找最后两条无文字 bg 行
-          2. › + 背景色组合（次选）：找最后一个有非默认背景色的 › 行
+          2. 精确检测输入区域首行（亮起的 › + 连续三行背景色）：
+             - 行首是 ›（CODEX_PROMPT_CHARS）
+             - 首字符前景色是亮色（非 default 且非暗色）
+             - 上一行、当前行、下一行都有整行背景色（严格检查）
           3. 位置弱信号（回退）：找最后一个其后无 block 字符的 › 行
           4. 纯背景色兜底：无 › 时用 _find_chrome_boundary
         """
@@ -555,13 +669,26 @@ class CodexParser(BaseParser):
             bottom_rows = list(range(div_bottom + 1, scan_limit + 1))
             return output_rows, input_rows, bottom_rows
 
-        # Pass 2：› + 背景色组合
+        # Pass 2：精确检测输入区域首行（亮起的 › + 连续三行背景色）
         input_boundary = None
         for row in range(scan_limit, -1, -1):
-            if _get_col0(screen, row) in CODEX_PROMPT_CHARS:
-                if _get_row_dominant_bg(screen, row) != 'default':
-                    input_boundary = row
-                    break
+            if _is_lit_prompt_row(screen, row):
+                input_boundary = row
+                break
+
+        # Pass 2.5：宽松检测亮起的 › 行（只检查行首字符和前景色，不检查背景色）
+        if input_boundary is None:
+            for row in range(scan_limit, -1, -1):
+                col0 = _get_col0(screen, row)
+                if col0 in CODEX_PROMPT_CHARS:
+                    try:
+                        char = screen.buffer[row][0]
+                        fg = getattr(char, 'fg', 'default') or 'default'
+                        if _is_bright_color(fg):
+                            input_boundary = row
+                            break
+                    except (KeyError, IndexError):
+                        pass
 
         # Pass 3：位置弱信号
         if input_boundary is None:

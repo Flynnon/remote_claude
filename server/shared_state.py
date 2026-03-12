@@ -93,6 +93,7 @@ class SharedStateWriter:
     """写端：Server 进程持有，生命周期与 ProxyServer 相同"""
 
     def __init__(self, session_name: str):
+        self._session_name = session_name
         self._path = get_mq_path(session_name)
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -139,7 +140,7 @@ class SharedStateWriter:
                 "input_area_text": window.input_area_text,
                 "timestamp": window.timestamp,
                 "layout_mode": window.layout_mode,
-                "cli_type": getattr(window, "cli_type", "claude"),
+                "cli_type": getattr(window, "cli_type", "unknown"),
             }
             data = json.dumps(snapshot, ensure_ascii=False).encode('utf-8')
 
@@ -177,7 +178,7 @@ class SharedStateReader:
     反映跨进程写入更新的问题。每次 read() 打开文件读取后关闭，保证读到最新数据。
     """
 
-    _EMPTY = {"blocks": [], "status_line": None, "bottom_bar": None, "option_block": None}
+    _EMPTY = {"blocks": [], "status_line": None, "bottom_bar": None, "option_block": None, "cli_type": "claude"}
 
     def __init__(self, session_name: str):
         self._path = get_mq_path(session_name)

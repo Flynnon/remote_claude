@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lark_client.rich_text_renderer import RichTextRenderer
+sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
+from rich_text_renderer import RichTextRenderer
 
 def test_basic():
     """测试基本渲染"""

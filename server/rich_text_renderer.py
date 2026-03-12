@@ -11,9 +11,13 @@
 """
 
 import codecs
+import logging
 import pyte
+from pyte.screens import Margins
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 # ANSI 颜色名称到飞书颜色的映射
@@ -55,11 +59,38 @@ class StyledSpan:
     strikethrough: bool = False
 
 
-class _DimAwareScreen(pyte.Screen):
-    """pyte 不支持 SGR 2 (dim/faint)，子类化后将 dim 映射为灰色前景"""
+class _ExtendedStream(pyte.Stream):
+    """pyte.Stream 子类：补充 SU（ESC[nS）和 SD（ESC[nT）支持。
+
+    pyte 原生 CSI dispatch 不包含 'S' 和 'T'，Codex 的 ESC[2S 会被完全忽略。
+    """
+    csi = {**pyte.Stream.csi, 'S': 'scroll_up', 'T': 'scroll_down'}
+
+
+class _DebugStream(_ExtendedStream):
+    """_ExtendedStream 子类：记录被 pyte 丢弃的未识别转义序列到 DEBUG 日志。
+
+    仅在 --debug-screen 开启时使用，替换默认 _ExtendedStream。
+    """
+    _undef_logger = logging.getLogger('pyte.Stream.undefined')
+
+    def _undefined(self, *args, **kwargs):
+        self._undef_logger.debug(f"pyte 未识别序列: args={args!r} kwargs={kwargs!r}")
+
+
+class _DimAwareScreen(pyte.HistoryScreen):
+    """pyte.HistoryScreen 子类：
+    1. SGR 2 (dim/faint) 映射为灰色前景
+    2. 补充 SU/SD（ESC[nS/ESC[nT）滚动支持，滚出行保存到 history.top
+    """
 
     # dim 状态下使用的灰色（与终端 dim 效果近似）
     _DIM_FG = '808080'
+    _DEFAULT_HISTORY = 5000
+
+    def __init__(self, columns, lines, **kwargs):
+        kwargs.setdefault('history', self._DEFAULT_HISTORY)
+        super().__init__(columns, lines, **kwargs)
 
     def select_graphic_rendition(self, *attrs):
         # 检查是否包含 SGR 2 (dim)
@@ -70,13 +101,35 @@ class _DimAwareScreen(pyte.Screen):
         if has_dim and self.cursor.attrs.fg == 'default':
             self.cursor.attrs = self.cursor.attrs._replace(fg=self._DIM_FG)
 
+    def scroll_up(self, count=1):
+        """ESC[nS — SU：上滚 n 行，滚出行保存到 history.top"""
+        top, bottom = self.margins or Margins(0, self.lines - 1)
+        saved_y = self.cursor.y
+        self.cursor.y = bottom
+        for _ in range(count):
+            self.index()
+        self.cursor.y = saved_y
+
+    def scroll_down(self, count=1):
+        """ESC[nT — SD：下滚 n 行"""
+        top, bottom = self.margins or Margins(0, self.lines - 1)
+        saved_y = self.cursor.y
+        self.cursor.y = top
+        for _ in range(count):
+            self.reverse_index()
+        self.cursor.y = saved_y
+
 
 class RichTextRenderer:
     """将 pyte 屏幕内容转换为飞书富文本"""
 
-    def __init__(self, columns: int = 200, lines: int = 500):
+    def __init__(self, columns: int = 200, lines: int = 500, debug_stream: bool = False):
         self.screen = _DimAwareScreen(columns, lines)
-        self.stream = pyte.Stream(self.screen)
+        # debug_stream=True 时使用 _DebugStream，记录 pyte 未识别序列
+        if debug_stream:
+            self.stream = _DebugStream(self.screen)
+        else:
+            self.stream = _ExtendedStream(self.screen)
         self.stream.use_utf8 = True
         # 增量 UTF-8 解码器：保持跨 chunk 的解码状态，防止多字节序列被截断
         self._utf8_decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
@@ -84,6 +137,18 @@ class RichTextRenderer:
     def feed(self, data: bytes) -> None:
         """喂入原始终端数据"""
         text = self._utf8_decoder.decode(data)
+        # 改动4：检测 UTF-8 解码产生的替换字符（U+FFFD），说明原始字节流有非法序列
+        if '\ufffd' in text:
+            # 定位替换字符位置（最多报告前 5 处）
+            positions = [i for i, c in enumerate(text) if c == '\ufffd'][:5]
+            contexts = []
+            for pos in positions:
+                ctx_start = max(0, pos - 4)
+                ctx_end = min(len(text), pos + 5)
+                ctx = repr(text[ctx_start:ctx_end])
+                contexts.append(f"pos={pos} ctx={ctx}")
+            logger.warning(f"UTF-8 解码替换字符(\\ufffd): count={text.count(chr(0xfffd))} "
+                           f"positions={contexts}")
         self.stream.feed(text)
 
     def clear(self) -> None:
