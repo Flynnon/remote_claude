@@ -285,7 +285,7 @@ class SharedMemoryPoller:
         # 步骤 1：延迟初始化 Reader
         if tracker.reader is None:
             try:
-                from shared_state import get_mq_path, SharedStateReader
+                from server.shared_state import get_mq_path, SharedStateReader
                 mq_path = get_mq_path(tracker.session_name)
                 if not mq_path.exists():
                     return
