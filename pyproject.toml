@@ -25,6 +25,11 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore:websockets\\.InvalidStatusCode is deprecated:DeprecationWarning:lark_oapi\\.ws\\.client",
+    "ignore:websockets\\.legacy is deprecated; see https.*upgrade\\.html for upgrade instructions:DeprecationWarning:websockets\\.legacy",
+    "ignore:pkg_resources is deprecated as an API\\.:DeprecationWarning:pkg_resources",
+]
 
 [build-system]
 requires = ["hatchling"]

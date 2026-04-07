@@ -16,6 +16,7 @@ import logging
 import os
 import platform
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -373,11 +374,13 @@ class CardSettings:
     """卡片设置"""
     quick_commands: List[QuickCommand] = field(default_factory=list)
     expiry_sec: int = 3600
+    enter_to_submit: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "quick_commands": [cmd.to_dict() for cmd in self.quick_commands],
             "expiry_sec": self.expiry_sec,
+            "enter_to_submit": self.enter_to_submit,
         }
 
     @classmethod
@@ -392,6 +395,7 @@ class CardSettings:
         return cls(
             quick_commands=commands,
             expiry_sec=data.get("expiry_sec", 3600),
+            enter_to_submit=data.get("enter_to_submit", True),
         )
 
 
@@ -453,7 +457,6 @@ class NotifySettings:
 class UiSettings:
     """UI 设置"""
     show_builtin_keys: bool = True
-    show_launchers: List[str] = field(default_factory=list)
     enabled_keys: List[str] = field(default_factory=lambda: OPERATION_PANEL_DEFAULT_KEYS.copy())
 
     def __post_init__(self):
@@ -462,7 +465,6 @@ class UiSettings:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "show_builtin_keys": self.show_builtin_keys,
-            "show_launchers": self.show_launchers,
             "enabled_keys": self.enabled_keys,
         }
 
@@ -470,7 +472,6 @@ class UiSettings:
     def from_dict(cls, data: Dict[str, Any]) -> "UiSettings":
         return cls(
             show_builtin_keys=data.get("show_builtin_keys", True),
-            show_launchers=data.get("show_launchers", []),
             enabled_keys=_normalize_enabled_keys(data.get("enabled_keys", OPERATION_PANEL_DEFAULT_KEYS)),
         )
 
@@ -618,6 +619,28 @@ class State:
         )
 
 
+def _write_config_atomically(config_obj: Any, config_file: Path) -> None:
+    """将配置先写入同目录临时文件，再原子替换目标文件。"""
+    content = json.dumps(config_obj.to_dict(), indent=2, ensure_ascii=False)
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_path_str = tempfile.mkstemp(
+        prefix=f".{config_file.name}.",
+        suffix=".tmp",
+        dir=str(config_file.parent),
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, config_file)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
 # ============== 配置加载/保存函数 ==============
 
 def _update_config_with_lock(
@@ -652,10 +675,8 @@ def _update_config_with_lock(
                 config = load_func()
                 # 应用修改
                 result = mutator(config)
-                # 直接写回文件（不再调用 save_func 避免死锁）
-                content = json.dumps(config.to_dict(), indent=2, ensure_ascii=False)
-                with open(config_file, 'w', encoding="utf-8") as f:
-                    f.write(content)
+                # 在锁保护下写入配置文件
+                _write_config_atomically(config, config_file)
                 return result
             finally:
                 fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
@@ -691,9 +712,7 @@ def _save_config_with_lock(
             fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
             try:
                 # 在锁保护下写入配置文件
-                content = json.dumps(config_obj.to_dict(), indent=2, ensure_ascii=False)
-                with open(config_file, 'w', encoding="utf-8") as f:
-                    f.write(content)
+                _write_config_atomically(config_obj, config_file)
             finally:
                 fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
     except PermissionError:
@@ -750,6 +769,12 @@ def save_state(state: State) -> None:
 
 
 # ============== 向后兼容辅助函数 ==============
+
+
+def get_lark_enter_submit_enabled(settings: Optional[Settings] = None) -> bool:
+    """读取飞书卡片回车即确认全局开关，默认开启。"""
+    cfg = settings or load_settings()
+    return bool(getattr(cfg.card, "enter_to_submit", True))
 
 
 def get_notify_ready_enabled() -> bool:
@@ -857,12 +882,21 @@ def get_session_auto_answer_enabled(session_name: str) -> bool:
 
 
 def set_session_auto_answer_enabled(session_name: str, enabled: bool, enabled_by: str = "") -> None:
-    """设置指定 session 的自动应答开关状态"""
-    state = load_state()
-    if session_name not in state.sessions:
-        state.sessions[session_name] = SessionState(path="")
-    state.sessions[session_name].auto_answer_enabled = enabled
-    save_state(state)
+    """设置指定 session 的自动应答开关状态（原子更新）"""
+
+    def mutator(state: State):
+        if session_name not in state.sessions:
+            state.sessions[session_name] = SessionState(path="")
+        state.sessions[session_name].auto_answer_enabled = enabled
+        return None
+
+    _update_config_with_lock(
+        STATE_FILE,
+        STATE_LOCK_FILE,
+        load_state,
+        State,
+        mutator,
+    )
 
 
 # ============== 模糊指令配置 ==============
@@ -903,8 +937,14 @@ def remove_session_mapping(truncated_name: str) -> bool:
     Returns:
         bool: 是否成功删除
     """
-    state = load_state()
-    if state.remove_session(truncated_name):
-        save_state(state)
-        return True
-    return False
+
+    def mutator(state: State):
+        return state.remove_session(truncated_name)
+
+    return _update_config_with_lock(
+        STATE_FILE,
+        STATE_LOCK_FILE,
+        load_state,
+        State,
+        mutator,
+    )

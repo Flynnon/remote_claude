@@ -13,7 +13,7 @@ import logging
 import re as _re
 import pathlib as _pl
 import json as _json
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     from utils.runtime_config import Settings
@@ -57,6 +57,17 @@ def _get_matching_commands(settings: Optional["Settings"]) -> List[Dict[str, str
         {"name": launcher.name, "command": launcher.command}
         for launcher in settings.launchers
     ]
+
+
+def _get_enter_submit_config(settings: Optional["Settings"]) -> Tuple[bool, str, str, str]:
+    """返回回车提交配置：是否开启、输入提示、选项提示、快捷命令提示。"""
+    enabled = True
+    if settings is not None:
+        enabled = bool(getattr(settings.card, "enter_to_submit", True))
+
+    if enabled:
+        return True, "输入消息后按回车发送", "当前高亮选项可直接回车确认", "选择快捷操作后按回车确认"
+    return False, "输入消息后点击发送", "请选择后点击确认", "选择快捷操作后点击提交"
 
 
 def _build_header(title: str, template: str) -> dict:
@@ -247,7 +258,7 @@ def _build_quick_command_selector(quick_commands: List[Any]) -> Dict[str, Any]:
         quick_commands: QuickCommand 对象列表
 
     Returns:
-        飞书卡片 action 元素，包含 select_static
+        飞书卡片 select_static 组件
     """
     # 飞书 select_static 最多支持 20 个选项，超出时截断并输出警告
     MAX_OPTIONS = 20
@@ -269,27 +280,24 @@ def _build_quick_command_selector(quick_commands: List[Any]) -> Dict[str, Any]:
         })
 
     return {
-        "tag": "action",
-        "actions": [{
-            "tag": "select_static",
-            "placeholder": {"tag": "plain_text", "content": "快捷命令"},
-            "options": options,
-        }]
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "快捷命令"},
+        "options": options,
     }
 
 
 def _build_operation_selector(settings: Optional["Settings"]) -> Optional[Dict[str, Any]]:
-    """构建会话页操作下拉（快捷键 + 启动器）"""
+    """构建会话页操作下拉（快捷键 + 快捷命令）"""
     options: List[Dict[str, Any]] = []
 
     show_builtin_keys = True
-    show_launchers: List[str] = []
     enabled_keys = set()
+    quick_commands: List[Any] = []
 
     if settings:
         show_builtin_keys = settings.ui.show_builtin_keys
-        show_launchers = settings.ui.show_launchers
         enabled_keys = set(settings.ui.enabled_keys)
+        quick_commands = settings.get_quick_commands()
 
     if show_builtin_keys:
         key_map = [
@@ -307,13 +315,13 @@ def _build_operation_selector(settings: Optional["Settings"]) -> Optional[Dict[s
                     "value": f"key:{key_name}",
                 })
 
-    if show_launchers and settings:
-        for launcher in settings.launchers:
-            if launcher.name in show_launchers:
-                options.append({
-                    "text": {"tag": "plain_text", "content": f"{launcher.name}: {launcher.command}"},
-                    "value": f"cmd:{launcher.command}",
-                })
+    for cmd in quick_commands:
+        icon = cmd.icon if getattr(cmd, "icon", "") else ""
+        text = f"{icon} {cmd.label}".strip() if icon else cmd.label
+        options.append({
+            "text": {"tag": "plain_text", "content": text},
+            "value": f"cmd:{cmd.value}",
+        })
 
     if not options:
         return None
@@ -323,18 +331,24 @@ def _build_operation_selector(settings: Optional["Settings"]) -> Optional[Dict[s
         options = options[:20]
 
     return {
-        "tag": "action",
-        "actions": [{
-            "tag": "select_static",
-            "placeholder": {"tag": "plain_text", "content": "操作"},
-            "options": options,
-        }]
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "操作"},
+        "options": options,
     }
 
 
-def _build_menu_button_row(session_name: Optional[str] = None, disconnected: bool = False, is_loading: bool = False, disabled_buttons: Optional[List[str]] = None, settings: Optional["Settings"] = None) -> List[Dict[str, Any]]:
+def _build_menu_button_row(
+    session_name: Optional[str] = None,
+    disconnected: bool = False,
+    is_loading: bool = False,
+    disabled_buttons: Optional[List[str]] = None,
+    settings: Optional["Settings"] = None,
+    form_error_message: Optional[str] = None,
+    form_error_action: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """底部快捷菜单按钮行，用于流式卡片"""
     disabled_set = set(disabled_buttons or [])
+    enter_submit_enabled, input_hint_text, _option_hint_text, _quick_command_hint = _get_enter_submit_config(settings)
 
     if is_loading:
         disabled_set.add("all")
@@ -405,9 +419,10 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "elements": [{
                     "tag": "button",
                     "name": "enter_submit",
-                    "text": {"tag": "plain_text", "content": "发送"},
+                    "text": {"tag": "plain_text", "content": "发送" if enter_submit_enabled else "点击发送"},
                     "type": "primary",
                     "action_type": "form_submit",
+                    "value": {"submit_source": "button_click"},
                     **({"disabled": True} if "all" in disabled_set else {})
                 }]
             },
@@ -431,9 +446,10 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
                 "elements": [{
                     "tag": "button",
                     "name": "enter_submit",
-                    "text": {"tag": "plain_text", "content": "发送"},
+                    "text": {"tag": "plain_text", "content": "发送" if enter_submit_enabled else "点击发送"},
                     "type": "primary",
                     "action_type": "form_submit",
+                    "value": {"submit_source": "button_click"},
                     **({"disabled": True} if "all" in disabled_set else {})
                 }]
             },
@@ -442,22 +458,26 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
     menu_enter_row = {"tag": "column_set", "flex_mode": "none", "columns": menu_columns}
 
     input_box: Dict[str, Any] = {
-        "tag": "textarea",
+        "tag": "input",
         "name": "command",
         "placeholder": {"tag": "plain_text", "content": "输入消息..."},
     }
     if "all" in disabled_set:
         input_box["disabled"] = True
 
-    form_elements: List[Dict[str, Any]] = [menu_enter_row, input_box]
+    form_elements: List[Dict[str, Any]] = [menu_enter_row]
+    if form_error_message:
+        form_elements.append(_build_form_error_row(form_error_message, form_error_action))
+    form_elements.append({"tag": "markdown", "content": input_hint_text})
+    form_elements.append(input_box)
 
     action_items: List[Dict[str, Any]] = []
     operation_selector = _build_operation_selector(settings)
     if operation_selector:
-        selector_action = dict(operation_selector["actions"][0])
         if "all" in disabled_set:
-            selector_action["disabled"] = True
-        action_items.append(selector_action)
+            operation_selector = dict(operation_selector)
+            operation_selector["disabled"] = True
+        action_items.append(operation_selector)
 
     if session_name:
         from utils.runtime_config import get_auto_answer_delay, get_session_auto_answer_enabled
@@ -481,13 +501,58 @@ def _build_menu_button_row(session_name: Optional[str] = None, disconnected: boo
         action_items.append(auto_answer_btn)
 
     if action_items:
-        form_elements.append({"tag": "action", "actions": action_items})
+        form_elements.append({
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [{
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": action_items,
+            }],
+        })
 
     return [{
         "tag": "form",
         "name": "claude_input",
         "elements": form_elements,
     }]
+
+
+def _build_form_error_row(form_error_message: str, form_error_action: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """构建表单错误提示行，展示在输入框上方。"""
+    elements: List[Dict[str, Any]] = [{"tag": "markdown", "content": f"❌ {_escape_md(form_error_message)}"}]
+
+    if form_error_action:
+        action_name = form_error_action.get("action", "")
+        if action_name == "stream_attach_existing":
+            elements.append({
+                "tag": "column_set",
+                "flex_mode": "none",
+                "columns": [{
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [{
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "连接到现有会话"},
+                        "type": "primary",
+                        "behaviors": [{"type": "callback", "value": form_error_action}],
+                    }],
+                }],
+            })
+
+    return {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "background_style": "grey",
+        "columns": [{
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": elements,
+        }],
+    }
 
 
 def _build_menu_button_only() -> Dict[str, Any]:
@@ -785,6 +850,8 @@ def build_stream_card(
     is_loading: bool = False,
     disabled_buttons: Optional[List[str]] = None,
     loading_text: str = "处理中...",
+    form_error_message: Optional[str] = None,
+    form_error_action: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """从共享内存 blocks 流构建飞书卡片
 
@@ -930,6 +997,8 @@ def build_stream_card(
     if not is_frozen and not disconnected:
         buttons = _extract_buttons(blocks, option_block=option_block)
         if buttons:
+            _, _, option_hint_text, _quick_command_hint = _get_enter_submit_config(settings)
+            elements.append({"tag": "markdown", "content": option_hint_text})
             elements.extend(_build_buttons_v2(buttons, is_loading=is_loading))
 
     # === 第四层：菜单按钮 ===
@@ -956,6 +1025,8 @@ def build_stream_card(
         is_loading=is_loading,
         disabled_buttons=disabled_buttons,
         settings=settings,
+        form_error_message=form_error_message,
+        form_error_action=form_error_action,
     )
     elements.extend(menu_elements)
 
@@ -1466,10 +1537,18 @@ def build_expired_card(session_name: Optional[str] = None) -> Dict[str, Any]:
         },
         {"tag": "hr"},
         {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "🔄 刷新"},
-            "type": "primary",
-            "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [{
+                "tag": "column",
+                "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🔄 刷新"},
+                    "type": "primary",
+                    "behaviors": [{"type": "callback", "value": {"action": "menu_open"}}]
+                }]
+            }]
         }
     ]
 
@@ -1582,10 +1661,18 @@ def build_menu_card(sessions: List[Dict], current_session: Optional[str] = None,
 
     bypass_label = "🔓 新会话bypass: 开" if bypass_enabled else "🔒 新会话bypass: 关"
     elements.append({
-        "tag": "button",
-        "text": {"tag": "plain_text", "content": bypass_label},
-        "type": "default",
-        "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_bypass"}}]
+        "tag": "column_set",
+        "flex_mode": "none",
+        "columns": [{
+            "tag": "column",
+            "width": "auto",
+            "elements": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": bypass_label},
+                "type": "default",
+                "behaviors": [{"type": "callback", "value": {"action": "menu_toggle_bypass"}}]
+            }]
+        }]
     })
 
     # 自动应答按钮已迁移到会话流式卡片操作区（stream_toggle_auto_answer）

@@ -1274,6 +1274,37 @@ class TestPollerStartStop(unittest.TestCase):
         asyncio.run(_run())
 
 
+class TestSharedMemoryPollerAutoAnswerCancellation(unittest.TestCase):
+    def test_cancel_auto_answer_cancels_matching_session_task(self):
+        tracker_match = StreamTracker(chat_id="chat-1", session_name="session-a")
+        pending_match = MagicMock()
+        tracker_match.pending_auto_answer = pending_match
+
+        tracker_other = StreamTracker(chat_id="chat-2", session_name="session-b")
+        pending_other = MagicMock()
+        tracker_other.pending_auto_answer = pending_other
+
+        poller = SharedMemoryPoller(MagicMock())
+        poller._trackers = {
+            "chat-1": tracker_match,
+            "chat-2": tracker_other,
+        }
+
+        poller.cancel_auto_answer("session-a")
+
+        pending_match.cancel.assert_called_once()
+        self.assertIsNone(tracker_match.pending_auto_answer)
+        pending_other.cancel.assert_not_called()
+
+    def test_get_tracker_returns_tracker_by_chat_id(self):
+        tracker = StreamTracker(chat_id="chat-1", session_name="session-a")
+        poller = SharedMemoryPoller(MagicMock())
+        poller._trackers = {"chat-1": tracker}
+
+        self.assertIs(poller.get_tracker("chat-1"), tracker)
+        self.assertIsNone(poller.get_tracker("missing-chat"))
+
+
 class TestComputeHash(unittest.TestCase):
     """测试 hash 计算"""
 

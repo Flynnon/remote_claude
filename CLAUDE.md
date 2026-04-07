@@ -1,8 +1,9 @@
-# CLAUDE.md
+# CLAUDE.md/AGENTS.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 # **关键语言要求**
+
 你必须完全使用 **简体中文** 进行交互、思考和汇报。
 
 ## 项目定位
@@ -62,4 +63,4 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - 需已安装 `tmux` 和 `claude` CLI
 - socket 路径：`/tmp/remote-claude/<name>.sock`
 - tmux 会话前缀：`rc-`
-- 详细测试矩阵见 [`tests/TEST_PLAN.md`](./tests/TEST_PLAN.md)
+- 详细测试矩阵见 `tests/TEST_PLAN.md`

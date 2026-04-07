@@ -229,9 +229,24 @@ class TestCodexParserSelectedValue(unittest.TestCase):
         self.assertEqual(ob.selected_value, '2')
 
 
-# ── 3. SharedMemoryPoller.read_snapshot() 测试 ──────────────────────────────
-
 from lark_client.shared_memory_poller import SharedMemoryPoller, StreamTracker
+
+    def test_selected_value_preferred_when_present(self):
+        """analyze_option_block：selected_value 命中时优先确认当前高亮项"""
+        from lark_client.shared_memory_poller import analyze_option_block
+
+        option_block = {
+            'question': '继续吗？',
+            'selected_value': '2',
+            'options': [
+                {'label': '1. Yes', 'value': '1'},
+                {'label': '2. No', 'value': '2'},
+            ],
+        }
+
+        action_type, action_value = analyze_option_block(option_block)
+        self.assertEqual(action_type, 'select')
+        self.assertEqual(action_value, '2')
 
 
 class TestReadSnapshot(unittest.TestCase):
@@ -294,8 +309,7 @@ class TestHandleOptionSelect(unittest.IsolatedAsyncioTestCase):
         handler._bridges = {}
         handler._chat_sessions = {}
         handler._poller = MagicMock()
-        # 确保 _trackers 返回空字典，避免卡片过期检查被意外触发
-        handler._poller._trackers = {}
+        handler._poller.get_tracker = MagicMock(return_value=None)
         # get_active_card_id 返回 None，跳过 update_card 调用
         handler._poller.get_active_card_id = MagicMock(return_value=None)
         # 添加 _user_config 属性

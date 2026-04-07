@@ -11,38 +11,56 @@
 
 import sys
 from pathlib import Path
+
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-def test_config_functions():
+@pytest.fixture
+def runtime_config_store(tmp_path, monkeypatch):
+    """隔离运行时配置，避免集成测试读写真实用户目录。"""
+    user_data_dir = tmp_path / "remote-claude"
+    monkeypatch.setenv("REMOTE_CLAUDE_USER_DATA_DIR", str(user_data_dir))
+
+    import utils.session as session_module
+    import utils.runtime_config as runtime_config_module
+
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(session_module, "USER_DATA_DIR", user_data_dir)
+    monkeypatch.setattr(runtime_config_module, "USER_DATA_DIR", user_data_dir)
+    monkeypatch.setattr(runtime_config_module, "SETTINGS_FILE", user_data_dir / "settings.json")
+    monkeypatch.setattr(runtime_config_module, "STATE_FILE", user_data_dir / "state.json")
+    monkeypatch.setattr(runtime_config_module, "SETTINGS_LOCK_FILE", user_data_dir / "settings.json.lock")
+    monkeypatch.setattr(runtime_config_module, "STATE_LOCK_FILE", user_data_dir / "state.json.lock")
+
+    runtime_config_module.cleanup_backup_files()
+    return runtime_config_module
+
+
+def test_config_functions(runtime_config_store):
     """测试配置函数"""
-    from utils.runtime_config import (
-        get_auto_answer_delay,
-        get_card_expiry_enabled,
-        get_card_expiry_seconds,
-        set_session_auto_answer_enabled,
-        get_session_auto_answer_enabled,
-    )
+    runtime_config = runtime_config_store
 
     # 测试默认值
-    assert get_auto_answer_delay() == 10, f"Expected 10, got {get_auto_answer_delay()}"
-    assert get_card_expiry_enabled() == True
-    assert get_card_expiry_seconds() == 3600
+    assert runtime_config.get_auto_answer_delay() == 10
+    assert runtime_config.get_card_expiry_enabled() is True
+    assert runtime_config.get_card_expiry_seconds() == 3600
 
     # 测试 session 状态
-    set_session_auto_answer_enabled("test-session", True, "ou_test")
-    assert get_session_auto_answer_enabled("test-session") == True
+    runtime_config.set_session_auto_answer_enabled("test-session", True, "ou_test")
+    assert runtime_config.get_session_auto_answer_enabled("test-session") is True
 
-    set_session_auto_answer_enabled("test-session", False)
-    assert get_session_auto_answer_enabled("test-session") == False
-
-    print("Config functions test passed")
+    runtime_config.set_session_auto_answer_enabled("test-session", False)
+    assert runtime_config.get_session_auto_answer_enabled("test-session") is False
 
 
-def test_card_slice_expiry():
+def test_card_slice_expiry(runtime_config_store):
     """测试 CardSlice 过期标记"""
     from lark_client.shared_memory_poller import CardSlice
     import time
+
+    runtime_config = runtime_config_store
 
     # 创建一个 2 小时前的卡片
     old_slice = CardSlice(
@@ -51,12 +69,10 @@ def test_card_slice_expiry():
     )
 
     # 模拟过期检测
-    from utils.runtime_config import get_card_expiry_seconds
-    expiry = get_card_expiry_seconds()
+    expiry = runtime_config.get_card_expiry_seconds()
     elapsed = time.time() - old_slice.last_activity_time
 
     assert elapsed > expiry, f"Card should be expired: elapsed={elapsed}, expiry={expiry}"
-    print("CardSlice expiry test passed")
 
 
 def test_option_analyzer():
@@ -90,8 +106,6 @@ def test_option_analyzer():
     })
     assert result == ("select", "1"), f"Expected ('select', '1'), got {result}"
 
-    print("Option analyzer test passed")
-
 
 def test_auto_answer_block():
     """测试 AutoAnswerBlock"""
@@ -119,13 +133,3 @@ def test_auto_answer_block():
     )
     assert block.action_type == "input"
     assert block.input_text == "继续"
-
-    print("AutoAnswerBlock test passed")
-
-
-if __name__ == "__main__":
-    test_config_functions()
-    test_card_slice_expiry()
-    test_option_analyzer()
-    test_auto_answer_block()
-    print("\nAll integration tests passed!")

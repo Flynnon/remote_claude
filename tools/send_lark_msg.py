@@ -11,6 +11,23 @@ import os
 
 load_dotenv(Path.home() / ".remote-claude" / ".env")
 
+
+def _get_env_value(key: str, default: str = "") -> str:
+    aliases = {
+        "LARK_LOG_LEVEL": ("LOG_LEVEL",),
+        "LARK_NO_PROXY": ("NO_PROXY",),
+        "GROUP_NAME_PREFIX": ("GROUP_PREFIX",),
+        "ALLOWED_USERS": ("USER_WHITELIST",),
+    }
+    value = os.getenv(key)
+    if value not in (None, ""):
+        return value
+    for alias in aliases.get(key, ()):
+        alias_value = os.getenv(alias)
+        if alias_value not in (None, ""):
+            return alias_value
+    return default
+
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
 

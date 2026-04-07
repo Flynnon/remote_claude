@@ -20,30 +20,32 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 
-def test_default_log_level():
+def test_default_log_level(monkeypatch):
     """测试默认日志级别为 WARNING"""
-    # 保存原始环境
-    original = os.environ.pop("LARK_LOG_LEVEL", None)
+    original_log_level = os.environ.get("LOG_LEVEL")
+    original_new_level = os.environ.get("LARK_LOG_LEVEL")
 
     try:
-        # 清除环境变量
-        if "LARK_LOG_LEVEL" in os.environ:
-            del os.environ["LARK_LOG_LEVEL"]
+        os.environ["LOG_LEVEL"] = "WARNING"
+        os.environ.pop("LARK_LOG_LEVEL", None)
 
-        # 重新加载配置模块
         import importlib
         import lark_client.config as config_module
         importlib.reload(config_module)
 
-        # 验证默认值为 WARNING (30)
         assert config_module.LARK_LOG_LEVEL == 30, \
             f"默认日志级别应为 30 (WARNING)，实际 {config_module.LARK_LOG_LEVEL}"
         print("✓ 默认日志级别为 WARNING (30)")
-
     finally:
-        # 恢复原始环境
-        if original is not None:
-            os.environ["LARK_LOG_LEVEL"] = original
+        if original_log_level is not None:
+            os.environ["LOG_LEVEL"] = original_log_level
+        else:
+            os.environ.pop("LOG_LEVEL", None)
+
+        if original_new_level is not None:
+            os.environ["LARK_LOG_LEVEL"] = original_new_level
+        else:
+            os.environ.pop("LARK_LOG_LEVEL", None)
 
 
 def test_env_override_debug():
@@ -92,6 +94,63 @@ def test_env_override_info():
             os.environ["LARK_LOG_LEVEL"] = original
         elif "LARK_LOG_LEVEL" in os.environ:
             del os.environ["LARK_LOG_LEVEL"]
+
+
+def test_legacy_log_level_fallback():
+    """测试旧字段 LOG_LEVEL 可回退到 LARK_LOG_LEVEL"""
+    original_new = os.environ.pop("LARK_LOG_LEVEL", None)
+    original_old = os.environ.get("LOG_LEVEL")
+
+    try:
+        os.environ["LOG_LEVEL"] = "INFO"
+
+        import importlib
+        import lark_client.config as config_module
+        importlib.reload(config_module)
+
+        assert config_module.LARK_LOG_LEVEL == 20, \
+            f"LOG_LEVEL=INFO 时应回退为 20，实际 {config_module.LARK_LOG_LEVEL}"
+        print("✓ LOG_LEVEL=INFO 时可回退为 INFO (20)")
+
+    finally:
+        if original_new is not None:
+            os.environ["LARK_LOG_LEVEL"] = original_new
+        elif "LARK_LOG_LEVEL" in os.environ:
+            del os.environ["LARK_LOG_LEVEL"]
+
+        if original_old is not None:
+            os.environ["LOG_LEVEL"] = original_old
+        elif "LOG_LEVEL" in os.environ:
+            del os.environ["LOG_LEVEL"]
+
+
+def test_new_log_level_overrides_legacy_log_level():
+    """测试新字段 LARK_LOG_LEVEL 优先于旧字段 LOG_LEVEL"""
+    original_new = os.environ.get("LARK_LOG_LEVEL")
+    original_old = os.environ.get("LOG_LEVEL")
+
+    try:
+        os.environ["LARK_LOG_LEVEL"] = "ERROR"
+        os.environ["LOG_LEVEL"] = "DEBUG"
+
+        import importlib
+        import lark_client.config as config_module
+        importlib.reload(config_module)
+
+        assert config_module.LARK_LOG_LEVEL == 40, \
+            f"新字段应优先，预期 40，实际 {config_module.LARK_LOG_LEVEL}"
+        print("✓ LARK_LOG_LEVEL 优先于 LOG_LEVEL")
+
+    finally:
+        if original_new is not None:
+            os.environ["LARK_LOG_LEVEL"] = original_new
+        elif "LARK_LOG_LEVEL" in os.environ:
+            del os.environ["LARK_LOG_LEVEL"]
+
+        if original_old is not None:
+            os.environ["LOG_LEVEL"] = original_old
+        elif "LOG_LEVEL" in os.environ:
+            del os.environ["LOG_LEVEL"]
 
 
 def test_env_override_error():
@@ -180,6 +239,8 @@ def run_all_tests():
         test_default_log_level,
         test_env_override_debug,
         test_env_override_info,
+        test_legacy_log_level_fallback,
+        test_new_log_level_overrides_legacy_log_level,
         test_env_override_error,
         test_invalid_log_level_fallback,
         test_case_insensitive,

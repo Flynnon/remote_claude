@@ -156,7 +156,7 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 3. **模拟用户安装** - 在临时目录执行 `npm install <packaged_file>`
 4. **验证 postinstall** - 检查 `.venv`、`pyproject.toml`、Python 依赖
 5. **env 配置与启动链路测试** - 验证 `check-env.sh` 的跳过逻辑、`lark start` 不阻塞、`remote-claude start` 正常启动，以及无效启动器配置能被识别
-6. **测试基本命令** - 验证 `remote-claude --help`、`remote-claude list`、`cla` 脚本语法与关键逻辑
+6. **测试基本命令** - 验证主入口、列表命令、快捷脚本语法与关键行为
 7. **文件完整性检查** - 验证关键文件（含 `resources/defaults/` 模板文件）是否存在
 8. **执行独立单元测试** - 运行核心测试（失败终止）和非核心测试（失败继续）
 9. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
@@ -168,9 +168,9 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 
 **核心测试**（失败终止整个测试流程）：
 - `test_session_truncate.py` - 会话名称截断测试
-- `test_runtime_config.py` - 运行时配置管理测试
+- `test_runtime_config.py` - 运行时配置与环境变量兼容测试
 - `test_biz_enum.py` - CLI 类型枚举测试
-- `test_custom_commands.py` - 自定义命令配置测试
+- `test_custom_commands.py` - 自定义命令、卸载入口与 completion 行为测试
 - `test_history_buffer.py` - 历史缓冲区测试
 - `test_auto_answer_analyzer.py` - 自动应答选项分析器测试
 - `test_auto_answer_integration.py` - 自动应答集成测试
@@ -180,14 +180,13 @@ Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
 - `test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required` - 跳过飞书配置检查
 - `test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details` - lazy init 失败信息可见
 - `test_entry_lazy_init.py` - 入口脚本与 lazy init 全量回归
-- `test_cli_help_and_remote.py` - CLI 帮助与 remote 参数回归
+- `test_cli_help_and_remote.py` - CLI 行为、无副作用与 remote 参数回归
 - `test_startup_trace_logging.py` - 启动 tracing 日志回归
 
 **非核心测试**（失败继续执行，记录警告）：
 - `test_stream_poller.py` - 流式卡片模型测试
 - `test_card_interaction.py` - 卡片交互优化测试
 - `test_list_display.py` - List 命令展示测试
-- `test_log_level.py` - 日志级别处理测试
 - `test_disconnected_state.py` - 断开状态提示测试
 - `test_renderer.py` - 终端渲染器测试
 - `test_auto_answer_block.py` - 自动应答块渲染测试
@@ -223,169 +222,11 @@ uv run pytest -q tests/test_cli_help_and_remote.py
 /project/docker/scripts/docker-diagnose.sh
 ```
 
-诊断信息将保存到 `/home/testuser/test-results/diagnosis/` 目录。
+诊断脚本通常会收集以下信息，具体内容可能随排障需求调整：
 
-## 清理
-
-```bash
-# 停止并删除容器
-docker-compose -f docker/docker-compose.test.yml down
-
-# 删除镜像
-docker rmi remote-claude-npm-test
-
-# 删除测试结果
-rm -rf test-results
-```
-
-## CI/CD 集成
-
-在 GitHub Actions 或其他 CI/CD 平台中集成：
-
-```yaml
-- name: Run Docker Tests
-  run: |
-    docker-compose -f docker/docker-compose.test.yml build
-    docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
-
-- name: Upload Test Results
-  if: always()
-  uses: actions/upload-artifact@v3
-  with:
-    name: test-results
-    path: test-results/
-```
-
-关键配置：
-- `--rm` — 容器退出后自动删除
-- 测试成功时容器自动退出，失败时保持运行便于调试
-
-## 性能优化
-
-### 镜像源配置
-
-为加速国内网络环境下的依赖下载，默认配置了以下镜像源：
-
-- **npm**：使用 npmmirror 镜像源 (`https://registry.npmmirror.com`)
-- **PyPI**：使用清华大学镜像源 (`https://pypi.tuna.tsinghua.edu.cn/simple`)
-
-**切换镜像源：**
-
-```bash
-# 使用其他 PyPI 镜像源
-UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
-
-# CI 环境使用官方源
-UV_INDEX_URL=https://pypi.org/simple docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
-```
-
-**可选 PyPI 镜像源：**
-
-| 镜像源 | URL |
-|--------|-----|
-| 清华（默认） | `https://pypi.tuna.tsinghua.edu.cn/simple` |
-| 阿里云 | `https://mirrors.aliyun.com/pypi/simple` |
-| 腾讯云 | `https://mirrors.cloud.tencent.com/pypi/simple` |
-| 官方源 | `https://pypi.org/simple` |
-
-### BuildKit 缓存挂载
-
-Dockerfile 使用 `--mount=type=cache` 加速构建：
-- `apt` 缓存：避免重复下载系统包
-- `npm` 缓存：加速 npm 包安装
-- `uv` 缓存：加速 Python 依赖安装
-
-### 并行测试执行
-
-设置环境变量 `TEST_PARALLEL=true` 启用并行测试：
-- 自动检测并使用 GNU parallel
-- 默认 4 线程并行执行单元测试
-- 大幅缩短测试时间（约 30-50%）
-
-### Docker Compose 缓存卷
-
-`docker-compose.test.yml` 定义了持久化缓存卷：
-- `npm-cache`：npm 包缓存
-- `uv-cache`：uv 依赖缓存
-- 跨构建复用，避免重复下载
-
-### .dockerignore
-
-项目根目录的 `.dockerignore` 排除不需要的文件：
-- 减少构建上下文大小
-- 加快镜像构建速度
-- 避免敏感信息泄露
-
-## 设计决策
-
-### 为什么选择 Ubuntu 而非 Alpine？
-
-- Alpine 缺少 PTY 所需的系统库，需要额外构建
-- tmux 在 Alpine 上编译复杂
-- Ubuntu 22.04 稳定且体积可控
-
-### 为什么使用非 root 用户？
-
-- 模拟真实用户安装场景
-- 避免权限问题导致的假阳性测试
-
-### 为什么添加 GNU parallel？
-
-- 支持并行执行单元测试，缩短测试时间
-- 自动检测，无依赖时回退到串行执行
-- 通过 `--will-cite` 禁用引用提示，避免 CI 噪音
-
-## 文件说明
-
-- `Dockerfile.test` - 定义 Docker 测试镜像，包含所有必要的依赖
-- `docker-compose.test.yml` - Docker Compose 配置，挂载项目代码和测试结果目录
-- `docker-test.sh` - 主测试脚本，执行完整的测试流程
-- `docker-diagnose.sh` - 诊断脚本，测试失败时收集诊断信息
-- `test-results/` - 测试结果输出目录（包含测试报告和日志）
-
-## 常见问题
-
-### 构建卡在 `--mount=type=cache` 步骤？
-
-Docker Desktop (macOS) 上 BuildKit 缓存可能损坏，导致构建卡住。解决方法：
-
-```bash
-# 方法 1：清理构建缓存后重试（推荐）
-docker builder prune -f
-docker-compose -f docker/docker-compose.test.yml build --no-cache
-
-# 方法 2：完全重置 Docker（更彻底）
-docker system prune -af --volumes
-
-# 方法 3：重启 Docker Desktop
-# 在 Docker Desktop 菜单中选择 "Restart"
-```
-
-### 测试失败但本地成功？
-
-Docker 环境可能与本地环境不同。检查：
-
-1. Docker 镜像中的依赖版本是否满足要求
-2. 文件权限是否正确
-3. 环境变量是否正确设置
-
-### npm install 失败？
-
-查看日志：
-
-```bash
-cat test-results/npm_install.log
-```
-
-### 单元测试失败？
-
-查看具体的测试日志（文件名与测试路径一一对应，例如 `tests/test_entry_lazy_init.py` 会生成 `test-results/tests__test_entry_lazy_init.py.log`）：
-
-```bash
-ls test-results/tests__*.log
-cat test-results/tests__test_entry_lazy_init.py.log
-```
-
-## 联系支持
-
-如遇问题，请将 `/home/testuser/test-results/` 目录或 `diagnosis.tar.gz` 打包并发送给开发者。
+- 系统与依赖版本
+- npm / Python 安装信息
+- 安装后目录结构
+- `remote-claude list` 输出
+- socket / tmux / startup log 状态
+- `test-results/` 下的日志与错误摘要

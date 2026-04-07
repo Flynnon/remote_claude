@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.session import USER_DATA_DIR
 from utils.logging_setup import setup_role_logging
+from utils.runtime_config import get_lark_enter_submit_enabled
 
 
 def _setup_logging():
@@ -155,8 +156,19 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         # 检测 form 提交（输入框 Enter ↵ 按钮）
         form_value = getattr(action, 'form_value', None)
         if form_value is not None:
+            action_value = action.value or {}
+            submit_source = action_value.get("submit_source", "enter_key") if isinstance(action_value, dict) else "enter_key"
             command_text = (form_value.get("command") or "").strip()
-            print(f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}")
+            print(
+                f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}, "
+                f"source={submit_source}"
+            )
+
+            enter_submit_enabled = get_lark_enter_submit_enabled(handler._settings)
+            if command_text and not enter_submit_enabled and submit_source != "button_click":
+                asyncio.create_task(handler.handle_disabled_enter_submit(user_id, chat_id))
+                return None
+
             if command_text:
                 # 有输入内容 → 直通 Claude
                 asyncio.create_task(handler.forward_to_claude(user_id, chat_id, command_text))
@@ -306,6 +318,13 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
 
         if action_type == "menu_tree":
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, "", tree=True, message_id=message_id))
+            return None
+
+        # 流式卡片：快捷连接已存在会话
+        if action_type == "stream_attach_existing":
+            session_name = action_value.get("session", "")
+            print(f"[Lark] stream_attach_existing: session={session_name}")
+            asyncio.create_task(handler._cmd_attach(user_id, chat_id, session_name, message_id=message_id))
             return None
 
         # 流式卡片：断开连接

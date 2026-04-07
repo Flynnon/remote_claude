@@ -8,7 +8,7 @@
 
 | 类型 | 关注点 | 推荐命令 |
 |------|--------|---------|
-| 核心配置与命令行 | 会话名、配置迁移、help/remote 参数、启动 tracing | `uv run python3 -m pytest tests/test_session_truncate.py tests/test_runtime_config.py tests/test_custom_commands.py tests/test_cli_help_and_remote.py tests/test_startup_trace_logging.py -q` |
+| 核心配置与命令行 | 会话名、配置迁移、CLI 行为、remote 参数、启动 tracing | `uv run python3 -m pytest tests/test_session_truncate.py tests/test_runtime_config.py tests/test_custom_commands.py tests/test_cli_help_and_remote.py tests/test_startup_trace_logging.py -q` |
 | shell / 安装链路 | lazy init、shell 兼容、安装与入口脚本 | `uv run python3 -m pytest tests/test_entry_lazy_init.py -q` |
 | 飞书渲染与交互 | poller、卡片交互、断连展示、终端清理 | `uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_renderer.py -q` |
 
@@ -33,7 +33,7 @@ uv run remote-claude kill test
 
 ## 快速回归
 
-当修改命令行入口、帮助输出、remote 参数、shell 启动链路时，优先运行：
+当修改命令行入口、remote 参数、shell 启动链路时，优先运行：
 
 ```bash
 uv run python3 -m pytest \
@@ -59,7 +59,7 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - `remote-claude lark start` 在 mock 凭证下不无限阻塞
 - `remote-claude start` 的 Claude / Codex 启动链路
 - 无效 launcher 配置下的失败退出检测
-- 关键单元测试与入口脚本静态检查
+- 关键单元测试与入口脚本行为回归
 
 ### Docker 失败诊断
 
@@ -105,9 +105,9 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 
 | 验证点 | 命令 |
 |--------|------|
-| lark 无子命令返回帮助 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_lark_without_subcommand_prints_help_and_returns_zero -q` |
+| management/help 不产生副作用 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_management_subcommand_help_and_empty_invocation_do_not_create_side_effects -q` |
 | attach 远程参数顺序兼容 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_validate_remote_args_accepts_current_attach_order -q` |
-| attach/list tracing 日志脱敏 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_cmd_attach_remote_logs_tracing tests/test_cli_help_and_remote.py::test_cmd_list_remote_logs_tracing -q` |
+| token/regenerate-token 远程控制链路 | `uv run python3 -m pytest tests/test_cli_help_and_remote.py::test_cmd_remote_uses_validate_remote_args_and_run_remote_control tests/test_cli_help_and_remote.py::test_cmd_regenerate_token_uses_validate_remote_args_and_run_remote_control -q` |
 
 ---
 

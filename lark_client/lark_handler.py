@@ -394,6 +394,44 @@ class LarkHandler:
             await card_service.send_text(chat_id, f"错误: 启动失败 - {e}")
             return False
 
+    async def _update_current_stream_card_with_error(
+        self,
+        chat_id: str,
+        session_name: str,
+        form_error_message: str,
+        form_error_action: Optional[dict] = None,
+    ) -> bool:
+        """优先在当前流式卡片上展示表单错误。"""
+        card_id = self._poller.get_active_card_id(chat_id)
+        snapshot = self._poller.read_snapshot(chat_id) if card_id else None
+        if not card_id or not snapshot:
+            return False
+
+        card = build_stream_card(
+            blocks=snapshot.get("blocks", []),
+            status_line=snapshot.get("status_line"),
+            bottom_bar=snapshot.get("bottom_bar"),
+            agent_panel=snapshot.get("agent_panel"),
+            option_block=snapshot.get("option_block"),
+            session_name=session_name,
+            cli_type=snapshot.get("cli_type", "claude"),
+            settings=self._settings,
+            form_error_message=form_error_message,
+            form_error_action=form_error_action,
+        )
+        return await card_service.update_card(card_id, int(time.time() * 1000) % 1000000, card)
+
+    async def handle_disabled_enter_submit(self, user_id: str, chat_id: str) -> None:
+        """回车发送关闭时，在当前流式卡片上提示用户点击发送按钮。"""
+        session_name = self._chat_sessions.get(chat_id, "")
+        updated = await self._update_current_stream_card_with_error(
+            chat_id,
+            session_name,
+            "当前已关闭回车发送，请点击“发送”按钮提交",
+        )
+        if not updated:
+            await card_service.send_text(chat_id, "当前已关闭回车发送，请点击“发送”按钮提交")
+
     async def _cmd_start(self, user_id: str, chat_id: str, args: str, cli_command: str = "claude"):
         """启动新会话
 
@@ -429,10 +467,17 @@ class LarkHandler:
 
         sessions = list_active_sessions()
         if any(s["name"] == session_name for s in sessions):
-            await card_service.send_text(
+            updated = await self._update_current_stream_card_with_error(
                 chat_id,
-                f"错误: 会话 '{session_name}' 已存在\n使用 /attach {session_name} 连接"
+                session_name,
+                f"会话 '{session_name}' 已存在",
+                {"action": "stream_attach_existing", "session": session_name},
             )
+            if not updated:
+                await card_service.send_text(
+                    chat_id,
+                    f"错误: 会话 '{session_name}' 已存在\n使用 /attach {session_name} 连接"
+                )
             return
 
         if session_name in self._starting_sessions:
@@ -718,7 +763,7 @@ class LarkHandler:
         set_session_auto_answer_enabled(session_name, new_value, user_id)
 
         # 更新 tracker 状态
-        tracker = self._poller._trackers.get(chat_id)
+        tracker = self._poller.get_tracker(chat_id)
         if tracker:
             tracker.auto_answer_enabled = new_value
             # 取消待执行的自动应答
@@ -1036,7 +1081,7 @@ class LarkHandler:
                      chat_id=chat_id, detail=option_value)
 
         # 检查卡片是否过期
-        tracker = self._poller._trackers.get(chat_id)
+        tracker = self._poller.get_tracker(chat_id)
         if tracker and tracker.cards:
             active_slice = tracker.cards[-1]
             if active_slice.expired:

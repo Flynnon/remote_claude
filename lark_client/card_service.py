@@ -75,6 +75,22 @@ class CardService:
                 .app_secret(config.FEISHU_APP_SECRET) \
                 .build()
 
+    def _bind_card_state(self, chat_id: Optional[str], state: CardState) -> None:
+        """绑定 chat_id 与 message_id 索引，保持活跃卡片状态一致。"""
+        if chat_id:
+            old_state = self._active_cards.get(chat_id)
+            if old_state and old_state.message_id:
+                self._cards_by_message_id.pop(old_state.message_id, None)
+            self._active_cards[chat_id] = state
+        if state.message_id:
+            self._cards_by_message_id[state.message_id] = state
+
+    def _unbind_card_state(self, chat_id: str) -> None:
+        """移除 chat_id 及其反向 message_id 索引。"""
+        state = self._active_cards.pop(chat_id, None)
+        if state and state.message_id:
+            self._cards_by_message_id.pop(state.message_id, None)
+
     async def create_card(self, card_content: Dict[str, Any]) -> Optional[str]:
         """创建卡片实体，返回 card_id（失败自动重试 1 次）"""
         if not self.client:
@@ -160,8 +176,7 @@ class CardService:
         message_id = await self.send_card(chat_id, card_id)
         if message_id:
             state = CardState(card_id=card_id, message_id=message_id)
-            self._cards_by_message_id[message_id] = state
-            self._active_cards[chat_id] = state
+            self._bind_card_state(chat_id, state)
             logger.info(f"已记录卡片: chat={chat_id}, msg={message_id}, card={card_id}")
         return message_id
 
@@ -344,9 +359,7 @@ class CardService:
 
     def clear_active_card(self, chat_id: str):
         """清除聊天的活跃卡片"""
-        state = self._active_cards.pop(chat_id, None)
-        if state and state.message_id:
-            self._cards_by_message_id.pop(state.message_id, None)
+        self._unbind_card_state(chat_id)
 
 
 # 全局实例

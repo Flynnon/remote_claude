@@ -45,22 +45,22 @@ def _session_api():
         get_env_snapshot_path,
     )
     return {
-        "get_socket_path": get_socket_path,
-        "ensure_socket_dir": ensure_socket_dir,
-        "tmux_session_exists": tmux_session_exists,
-        "tmux_create_session": tmux_create_session,
-        "tmux_kill_session": tmux_kill_session,
-        "list_active_sessions": list_active_sessions,
-        "is_session_active": is_session_active,
-        "cleanup_session": cleanup_session,
-        "is_lark_running": is_lark_running,
-        "get_lark_pid": get_lark_pid,
-        "get_lark_status": get_lark_status,
-        "get_lark_pid_file": get_lark_pid_file,
-        "save_lark_status": save_lark_status,
-        "cleanup_lark": cleanup_lark,
-        "USER_DATA_DIR": USER_DATA_DIR,
-        "ensure_user_data_dir": ensure_user_data_dir,
+        "get_socket_path"      : get_socket_path,
+        "ensure_socket_dir"    : ensure_socket_dir,
+        "tmux_session_exists"  : tmux_session_exists,
+        "tmux_create_session"  : tmux_create_session,
+        "tmux_kill_session"    : tmux_kill_session,
+        "list_active_sessions" : list_active_sessions,
+        "is_session_active"    : is_session_active,
+        "cleanup_session"      : cleanup_session,
+        "is_lark_running"      : is_lark_running,
+        "get_lark_pid"         : get_lark_pid,
+        "get_lark_status"      : get_lark_status,
+        "get_lark_pid_file"    : get_lark_pid_file,
+        "save_lark_status"     : save_lark_status,
+        "cleanup_lark"         : cleanup_lark,
+        "USER_DATA_DIR"        : USER_DATA_DIR,
+        "ensure_user_data_dir" : ensure_user_data_dir,
         "get_env_snapshot_path": get_env_snapshot_path,
     }
 
@@ -176,6 +176,7 @@ def _normalize_original_path(value: str | None) -> str:
     value = value.strip()
     return value or "-"
 
+
 # 读取版本号（懒加载，避免 import 时触发文件读取）
 def get_version() -> str:
     try:
@@ -261,7 +262,6 @@ def _detect_hard_startup_failure(log_lines: list[str]) -> str:
         if any(marker in lower_line for marker in hard_failure_markers):
             return line
     return ""
-
 
 
 def add_remote_args(parser):
@@ -375,7 +375,6 @@ def run_remote_control(host: str, port: int, session: str, token: str, action: s
     except Exception as e:
         print(f"✗ 连接失败: {e}")
         return 1
-
 
 
 def validate_remote_args(args, session_fallback: str = None) -> tuple:
@@ -798,7 +797,8 @@ def cmd_list(args):
         else:
             path_display = original_path[:50] + ".." if len(original_path) > 52 else original_path
 
-        print(f"{cli_colored}{padding} {s['pid']:<8} {tmux_status:<6} {name_display:<{name_col_width}} {path_display:<{path_col_width}}")
+        print(
+            f"{cli_colored}{padding} {s['pid']:<8} {tmux_status:<6} {name_display:<{name_col_width}} {path_display:<{path_col_width}}")
 
     print("-" * (8 + 8 + 6 + name_col_width + path_col_width + 4))
     print(f"共 {len(sessions)} 个会话")
@@ -1309,25 +1309,25 @@ def cmd_config_reset(args):
     """配置重置命令"""
     from utils.runtime_config import (
         USER_DATA_DIR,
-        USER_CONFIG_FILE,
-        RUNTIME_CONFIG_FILE,
-        USER_CONFIG_LOCK_FILE,
-        RUNTIME_LOCK_FILE,
         cleanup_backup_files,
         ConfigType,
+        SETTINGS_FILE,
+        STATE_FILE,
+        SETTINGS_LOCK_FILE,
+        STATE_LOCK_FILE
     )
 
     # 确定要重置的配置文件
     reset_all = getattr(args, 'all', False)
-    reset_config = getattr(args, 'config_only', False)
-    reset_runtime = getattr(args, 'runtime_only', False)
+    reset_settings = getattr(args, 'settings_only', False)
+    reset_state = getattr(args, 'state_only', False)
 
-    if not (reset_all or reset_config or reset_runtime):
+    if not (reset_all or reset_settings or reset_state):
         # 交互式选择
         print("选择要重置的配置：")
-        print("1. 全部配置（config.json + runtime.json）")
-        print("2. 仅用户配置（config.json）")
-        print("3. 仅运行时配置（runtime.json）")
+        print("1. 全部配置（settings.json + state.json）")
+        print("2. 仅用户配置（settings.json）")
+        print("3. 仅运行时配置（state.json）")
         print("4. 取消")
         try:
             choice = input("请选择 [1-4]: ").strip()
@@ -1338,7 +1338,7 @@ def cmd_config_reset(args):
         if choice == '1':
             reset_all = True
         elif choice == '2':
-            reset_config = True
+            reset_settings = True
         elif choice == '3':
             reset_runtime = True
         else:
@@ -1358,33 +1358,33 @@ def cmd_config_reset(args):
 
     # 执行重置
     try:
-        if reset_all or reset_config:
-            USER_CONFIG_FILE.write_text(config_template.read_text(encoding="utf-8"), encoding="utf-8")
-            print(f"✓ 已重置用户配置: {USER_CONFIG_FILE}")
+        if reset_all or reset_settings:
+            SETTINGS_FILE.write_text(config_template.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"✓ 已重置用户配置: {SETTINGS_FILE}")
 
-        if reset_all or reset_runtime:
-            RUNTIME_CONFIG_FILE.write_text(runtime_template.read_text(encoding="utf-8"), encoding="utf-8")
-            print(f"✓ 已重置运行时配置: {RUNTIME_CONFIG_FILE}")
+        if reset_all or reset_state:
+            STATE_FILE.write_text(runtime_template.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"✓ 已重置运行时配置: {STATE_FILE}")
 
         # 清理副作用文件（锁文件、备份文件），范围与重置配置保持一致
         # 状态文件（lark.pid、lark.status）不清理
-        if reset_all or reset_config:
+        if reset_all or reset_settings:
             try:
-                USER_CONFIG_LOCK_FILE.unlink()
-                print(f"✓ 已清理锁文件: {USER_CONFIG_LOCK_FILE}")
+                SETTINGS_LOCK_FILE.unlink()
+                print(f"✓ 已清理锁文件: {SETTINGS_LOCK_FILE}")
             except FileNotFoundError:
                 pass
-            cleanup_backup_files(ConfigType.CONFIG)
-            print("✓ 已清理 config 备份文件")
+            cleanup_backup_files(ConfigType.SETTINGS)
+            print("✓ 已清理 settings 备份文件")
 
-        if reset_all or reset_runtime:
+        if reset_all or reset_state:
             try:
-                RUNTIME_LOCK_FILE.unlink()
-                print(f"✓ 已清理锁文件: {RUNTIME_LOCK_FILE}")
+                STATE_LOCK_FILE.unlink()
+                print(f"✓ 已清理锁文件: {STATE_LOCK_FILE}")
             except FileNotFoundError:
                 pass
-            cleanup_backup_files(ConfigType.RUNTIME)
-            print("✓ 已清理 runtime 备份文件")
+            cleanup_backup_files(ConfigType.STATE)
+            print("✓ 已清理 state 备份文件")
 
         print()
         print("配置重置完成")
@@ -1656,11 +1656,11 @@ def main():
         help="重置全部配置文件"
     )
     config_reset_parser.add_argument(
-        "--config", dest="config_only", action="store_true",
+        "--settings", dest="settings_only", action="store_true",
         help="仅重置用户配置"
     )
     config_reset_parser.add_argument(
-        "--runtime", dest="runtime_only", action="store_true",
+        "--state", dest="state_only", action="store_true",
         help="仅重置运行时配置"
     )
     config_reset_parser.set_defaults(func=cmd_config_reset)
@@ -1670,7 +1670,7 @@ def main():
 
     # connection 命令 - 管理远程连接配置
     connection_parser = subparsers.add_parser("connection", help="管理远程连接配置",
-                                               aliases=["conn"])
+                                              aliases=["conn"])
     connection_subparsers = connection_parser.add_subparsers(dest="connection_action", help="连接操作")
 
     # connection list
