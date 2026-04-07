@@ -5,7 +5,29 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lark_client.shared_memory_poller import analyze_option_block, VAGUE_KEYWORDS
+import pytest
+
+from lark_client.shared_memory_poller import analyze_option_block
+
+
+@pytest.fixture
+def runtime_config_store(tmp_path, monkeypatch):
+    user_data_dir = tmp_path / "remote-claude"
+    monkeypatch.setenv("REMOTE_CLAUDE_USER_DATA_DIR", str(user_data_dir))
+
+    import utils.session as session_module
+    import utils.runtime_config as runtime_config_module
+
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(session_module, "USER_DATA_DIR", user_data_dir)
+    monkeypatch.setattr(runtime_config_module, "USER_DATA_DIR", user_data_dir)
+    monkeypatch.setattr(runtime_config_module, "SETTINGS_FILE", user_data_dir / "settings.json")
+    monkeypatch.setattr(runtime_config_module, "STATE_FILE", user_data_dir / "state.json")
+    monkeypatch.setattr(runtime_config_module, "SETTINGS_LOCK_FILE", user_data_dir / "settings.json.lock")
+    monkeypatch.setattr(runtime_config_module, "STATE_LOCK_FILE", user_data_dir / "state.json.lock")
+
+    runtime_config_module.cleanup_backup_files()
+    return runtime_config_module
 
 
 def test_recommended_option():
@@ -129,14 +151,22 @@ def test_recommended_case_insensitive():
     print("✓ test_recommended_case_insensitive passed")
 
 
-def test_vague_keywords():
-    """测试模糊关键词集合内容"""
-    # 验证关键词集合包含预期的词
-    expected_chinese = {'继续', '好的', '是', '确认', '明白', '可以', '行', '对'}
-    expected_english = {'continue', 'yes', 'ok', 'proceed', 'go ahead', 'sure', 'confirm', 'alright', 'fine'}
+def test_vague_keywords(runtime_config_store):
+    """测试模糊关键词来自配置文件"""
+    runtime_config = runtime_config_store
+    settings = runtime_config.load_settings()
+    settings.session.auto_answer_vague_patterns = ["继续", "go ahead", "sure"]
+    runtime_config.save_settings(settings)
 
-    assert expected_chinese.issubset(VAGUE_KEYWORDS), "中文关键词缺失"
-    assert expected_english.issubset(VAGUE_KEYWORDS), "英文关键词缺失"
+    # 通过配置生效
+    action_type, action_value = analyze_option_block({
+        "options": [
+            {"label": "go ahead", "value": "1"},
+            {"label": "cancel", "value": "2"},
+        ]
+    })
+    assert action_type == "input"
+    assert action_value == "继续"
     print("✓ test_vague_keywords passed")
 
 

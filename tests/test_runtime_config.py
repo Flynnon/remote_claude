@@ -21,6 +21,8 @@ _PROJECT_ROOT = str(Path(__file__).parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import utils.runtime_config as config_module
+
 from utils.runtime_config import (
     Settings,
     State,
@@ -333,11 +335,14 @@ def test_corrupted_state():
     try:
         env.setup()
 
-        STATE_FILE.write_text("{ invalid json }")
+        config_module.STATE_FILE.write_text("{ invalid json }")
 
         state = load_state()
         assert isinstance(state, State)
         assert state.version == STATE_CURRENT_VERSION
+        backups = list(config_module.USER_DATA_DIR.glob("state.json.bak.*"))
+        assert backups
+        assert not config_module.STATE_FILE.exists()
 
     finally:
         env.teardown()

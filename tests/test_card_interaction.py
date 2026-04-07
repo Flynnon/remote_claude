@@ -180,7 +180,8 @@ class TestQuickCommandLoading(unittest.TestCase):
         handler._start_server_session = AsyncMock(return_value=True)
         handler._save_chat_bindings = MagicMock()
 
-        with patch('lark_client.lark_handler.card_service') as mock_card_service, \
+        with patch('lark_client.lark_handler.list_active_sessions', return_value=[]), \
+                patch('lark_client.lark_handler.card_service') as mock_card_service, \
                 patch('lark_client.lark_handler.asyncio.sleep', new=AsyncMock()) as mock_sleep:
             mock_card_service.send_text = AsyncMock()
 
@@ -581,6 +582,21 @@ def test_stream_card_submit_button_marks_click_submit_source():
     assert submit_btn["value"] == {"submit_source": "button_click"}
 
 
+def test_stream_card_submit_button_uses_send_label_when_enter_enabled():
+    from lark_client.card_builder import build_stream_card
+    from utils.runtime_config import Settings, CardSettings
+
+    card = build_stream_card(
+        blocks=[],
+        session_name="s1",
+        settings=Settings(card=CardSettings(enter_to_submit=True)),
+    )
+    form = next(elem for elem in card["body"]["elements"] if elem.get("tag") == "form")
+    submit_btn = form["elements"][0]["columns"][-1]["elements"][0]
+
+    assert submit_btn["text"]["content"] == "发送"
+
+
 def test_menu_card_kill_button_keeps_confirm_config():
     from lark_client.card_builder import build_menu_card
 
@@ -698,6 +714,10 @@ def test_dir_card_group_button_keeps_open_url_config():
 def test_main_blocks_enter_form_submit_when_disabled(mock_create_task, _mock_enter_submit):
     from lark_client import main
 
+    async def fake_handle_disabled_enter_submit(_user_id, _chat_id, _text):
+        return None
+
+    main.handler.handle_disabled_enter_submit = fake_handle_disabled_enter_submit
     mock_create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
     main.handler._chat_sessions["c1"] = "demo"
 
@@ -712,7 +732,7 @@ def test_main_blocks_enter_form_submit_when_disabled(mock_create_task, _mock_ent
 
     scheduled = [call.args[0].cr_code.co_name for call in mock_create_task.call_args_list]
     assert "forward_to_claude" not in scheduled
-    assert "handle_disabled_enter_submit" in scheduled
+    assert "fake_handle_disabled_enter_submit" in scheduled
 
 
 @patch("lark_client.main.get_lark_enter_submit_enabled", return_value=False)

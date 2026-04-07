@@ -1560,6 +1560,19 @@ def test_common_shortcut_helper_declares_launcher_and_permission_vars():
     assert "REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS" in content
 
 
+def test_docker_test_script_checks_shared_shortcut_entry_instead_of_inline_lark_start():
+    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
+    assert 'grep -q "_remote_claude_shortcut_help_or_main" "$install_dir/../bin/cla"' in content
+    assert 'grep -q "lark start" "$install_dir/../bin/cla"' not in content
+
+
+def test_docker_test_script_no_longer_uses_legacy_claude_command_as_failure_signal():
+    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
+    assert 'start_legacy_claude_command.log' in content
+    assert '旧 CLAUDE_COMMAND 配置未影响当前 launcher 启动链路' in content
+    assert '负面测试：CLAUDE_COMMAND=claudeyy 应导致 start 在 20s 内失败退出' not in content
+
+
 def test_setup_runtime_creation_stays_in_success_flow():
     content = (REPO_ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
     assert content.index("install_dependencies") < content.index("init_config_files")

@@ -93,15 +93,15 @@ test-results/
 
 ```bash
 # 方式一：直接运行快捷命令（推荐）
-cd test-results/npm-install/node_modules/remote-claude
+cd /home/testuser/test-npm-install/node_modules/remote-claude
 ./bin/cla  # 启动 Claude 会话
 
 # 方式二：使用公开入口查看帮助
-cd test-results/npm-install/node_modules/remote-claude
+cd /home/testuser/test-npm-install/node_modules/remote-claude
 ./bin/remote-claude --help
 
 # 方式三：激活虚拟环境后使用（传统方式）
-source test-results/npm-install/node_modules/remote-claude/.venv/bin/activate
+source /home/testuser/test-npm-install/node_modules/remote-claude/.venv/bin/activate
 remote-claude --help
 ```
 
@@ -137,14 +137,14 @@ remote-claude start demo --launcher Codex
 
 ```bash
 # 验证 Python 环境
-test-results/npm-install/node_modules/remote-claude/.venv/bin/python3 --version
+/home/testuser/test-npm-install/node_modules/remote-claude/.venv/bin/python3 --version
 
 # 验证依赖
-test-results/npm-install/node_modules/remote-claude/.venv/bin/python3 -c "import lark_oapi; print('✓ 依赖完整')"
+/home/testuser/test-npm-install/node_modules/remote-claude/.venv/bin/python3 -c "import lark_oapi; print('✓ 依赖完整')"
 
 # 验证命令可用
-test-results/npm-install/node_modules/remote-claude/bin/cla --help
-test-results/npm-install/node_modules/remote-claude/bin/remote-claude --help
+/home/testuser/test-npm-install/node_modules/remote-claude/bin/cla --help
+/home/testuser/test-npm-install/node_modules/remote-claude/bin/remote-claude --help
 ```
 
 ## 测试流程

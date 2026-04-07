@@ -59,7 +59,6 @@ MAX_CARD_BLOCKS = int(os.getenv("MAX_CARD_BLOCKS", "50"))
 
 # lark_client 日志级别（可选，默认 WARNING）
 # 支持: DEBUG / INFO / WARNING / ERROR
-# 默认 WARNING 以减少生产环境日志噪音，调试时可设为 DEBUG 或 INFO
 _LARK_LOG_LEVEL = _get_env_value("LARK_LOG_LEVEL", "WARNING").upper()
 _LOG_LEVEL_MAP = {
     "DEBUG": 10,
@@ -67,17 +66,7 @@ _LOG_LEVEL_MAP = {
     "WARNING": 30,
     "ERROR": 40,
 }
-if _LARK_LOG_LEVEL in _LOG_LEVEL_MAP:
-    LARK_LOG_LEVEL = _LOG_LEVEL_MAP[_LARK_LOG_LEVEL]
-else:
-    # 无效日志级别，输出警告并回退到 WARNING
-    LARK_LOG_LEVEL = _LOG_LEVEL_MAP["WARNING"]
-    # 延迟输出警告（在 logging 配置后）
-    import logging
-    logging.getLogger('LarkConfig').warning(
-        f"无效的日志级别 '{_LARK_LOG_LEVEL}'，回退到 WARNING。"
-        f"有效值: DEBUG, INFO, WARNING, ERROR"
-    )
+LARK_LOG_LEVEL = _LOG_LEVEL_MAP.get(_LARK_LOG_LEVEL, _LOG_LEVEL_MAP["WARNING"])
 
 # SOCKS 代理兼容（可选，默认 False）
 # 系统有 SOCKS 代理但飞书可直连时，设为 1 绕过代理

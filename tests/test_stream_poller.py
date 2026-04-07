@@ -46,6 +46,14 @@ class TestSettingsReload(unittest.TestCase):
         self.assertEqual(first, {"version": "new-1"})
         self.assertEqual(second, {"version": "new-2"})
 
+    def test_card_slice_defaults_include_activity_and_expiry_flags(self):
+        from lark_client.shared_memory_poller import CardSlice
+
+        card_slice = CardSlice(card_id="card_001")
+
+        self.assertIsInstance(card_slice.last_activity_time, float)
+        self.assertFalse(card_slice.expired)
+
 
 class TestEscapeMd(unittest.TestCase):
     """测试 _escape_md markdown 特殊字符转义"""
@@ -1037,6 +1045,7 @@ class TestPollerPollOnce(unittest.TestCase):
         asyncio.run(self.poller._poll_once(tracker))
 
         original_sequence = tracker.cards[0].sequence
+        original_last_activity = tracker.cards[0].last_activity_time
         self.card_service.update_card = AsyncMock(return_value=False)
         self.card_service.create_card = AsyncMock(return_value="card_002")
         tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
@@ -1045,6 +1054,7 @@ class TestPollerPollOnce(unittest.TestCase):
 
         self.assertFalse(tracker.cards[0].frozen)
         self.assertEqual(tracker.cards[0].sequence, original_sequence)
+        self.assertEqual(tracker.cards[0].last_activity_time, original_last_activity)
         self.assertEqual(len(tracker.cards), 1)
 
     def test_handle_element_limit_clears_last_notify_message_on_success(self):
@@ -1164,6 +1174,34 @@ class TestPollerPollOnce(unittest.TestCase):
 
         self.assertEqual(tracker.cards[0].card_id, "card_fallback")
         self.assertEqual(tracker.cards[0].sequence, 0)
+        self.assertEqual(tracker.cards[0].last_activity_time, original_last_activity)
+
+    def test_update_fallback_create_failure_does_not_commit_hash_or_sequence_or_timestamp(self):
+        """fallback 创建新卡失败时不应提交 content_hash、sequence 或活动时间"""
+        blocks = [{"_type": "OutputBlock", "content": "hello", "indicator": "●"}]
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.reader = self._make_reader({"blocks": blocks, "status_line": None, "bottom_bar": None})
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        original_card_id = tracker.cards[0].card_id
+        original_sequence = tracker.cards[0].sequence
+        original_hash = tracker.content_hash
+        original_last_activity = tracker.cards[0].last_activity_time
+
+        blocks_v2 = [
+            {"_type": "OutputBlock", "content": "hello", "indicator": "●"},
+            {"_type": "OutputBlock", "content": "world", "indicator": "●"},
+        ]
+        tracker.reader = self._make_reader({"blocks": blocks_v2, "status_line": None, "bottom_bar": None})
+        self.card_service.update_card = AsyncMock(return_value=False)
+        self.card_service.create_card = AsyncMock(return_value=None)
+
+        asyncio.run(self.poller._poll_once(tracker))
+
+        self.assertEqual(tracker.cards[0].card_id, original_card_id)
+        self.assertEqual(tracker.cards[0].sequence, original_sequence)
+        self.assertEqual(tracker.content_hash, original_hash)
         self.assertEqual(tracker.cards[0].last_activity_time, original_last_activity)
 
     def test_update_fallback_create_failure_does_not_log_update(self):

@@ -88,18 +88,11 @@ class TestClaudeParserSelectedValue(unittest.TestCase):
             '你喜欢哪种编程语言？',
             '1. Python',
             '2. Go',
-            '❯ navigate',  # ❯ 在非数字行（会被 _has_numbered_options 用作锚点，但选项行本身无 ❯）
-        ])
-        # 需要至少一个 ❯ 锚点行才能解析，这里写一个有效布局
-        screen2, input_rows2 = self._make_input_screen([
-            '你喜欢哪种编程语言？',
-            '1. Python',
-            '2. Go',
             '❯ to navigate',  # 这行会让 _has_numbered_options 通过（有 ❯），但选项上无 ❯ 前缀
         ])
         # 这种情况下 selected_value 应为空（选项行 "1." 和 "2." 均无 ❯ 前缀）
         overflow = []
-        ob = self.parser._parse_input_area(screen2, input_rows2, [], overflow)
+        ob = self.parser._parse_input_area(screen, input_rows, [], overflow)
         if ob:
             self.assertEqual(ob.selected_value, '')
 
@@ -229,24 +222,23 @@ class TestCodexParserSelectedValue(unittest.TestCase):
         self.assertEqual(ob.selected_value, '2')
 
 
-from lark_client.shared_memory_poller import SharedMemoryPoller, StreamTracker
+from lark_client.shared_memory_poller import SharedMemoryPoller, StreamTracker, analyze_option_block
 
-    def test_selected_value_preferred_when_present(self):
-        """analyze_option_block：selected_value 命中时优先确认当前高亮项"""
-        from lark_client.shared_memory_poller import analyze_option_block
 
-        option_block = {
-            'question': '继续吗？',
-            'selected_value': '2',
-            'options': [
-                {'label': '1. Yes', 'value': '1'},
-                {'label': '2. No', 'value': '2'},
-            ],
-        }
+def test_selected_value_preferred_when_present():
+    """analyze_option_block：selected_value 命中时优先确认当前高亮项"""
+    option_block = {
+        'question': '继续吗？',
+        'selected_value': '2',
+        'options': [
+            {'label': '1. Yes', 'value': '1'},
+            {'label': '2. No', 'value': '2'},
+        ],
+    }
 
-        action_type, action_value = analyze_option_block(option_block)
-        self.assertEqual(action_type, 'select')
-        self.assertEqual(action_value, '2')
+    action_type, action_value = analyze_option_block(option_block)
+    assert action_type == 'select'
+    assert action_value == '2'
 
 
 class TestReadSnapshot(unittest.TestCase):

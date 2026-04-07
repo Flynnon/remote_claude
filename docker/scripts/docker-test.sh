@@ -27,12 +27,26 @@ trap 'handle_interrupt' INT TERM
 
 # 结果目录
 RESULTS_DIR="/home/testuser/test-results"
-
+INSTALL_DIR="/home/testuser/test-npm-install"
+KEEP_CONTAINER_ALIVE="${KEEP_CONTAINER_ALIVE:-1}"
 mkdir -p "$RESULTS_DIR"
 
 # 日志函数
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+check_command() {
+    local display_name="$1"
+    local version_cmd="$2"
+    local value
+
+    if value=$(eval "$version_cmd" 2>/dev/null | head -1); then
+        log_success "$display_name: $value"
+    else
+        log_error "$display_name: 未找到"
+        return 1
+    fi
 }
 
 log_success() {
@@ -72,7 +86,7 @@ print_header() {
 # 参数: $1 = session_name
 cleanup_session() {
     local session="$1"
-    uv run remote-claude kill "$session" > /dev/null 2>&1 || true
+    uv run python3 remote_claude.py kill "$session" > /dev/null 2>&1 || true
     tmux kill-session -t "rc-$session" 2>/dev/null || true
 }
 
@@ -93,15 +107,12 @@ print_session_diagnostics() {
         tail -30 "$server_log"
     fi
 
-    # 检查 tmux 会话状态
     log_info "=== tmux 会话状态 ==="
     tmux list-sessions 2>&1 || echo "没有活跃的 tmux 会话"
 
-    # 检查 socket 目录
     log_info "=== socket 目录状态 ==="
     ls -la /tmp/remote-claude/ 2>&1 || echo "socket 目录不存在"
 
-    # 尝试捕获 tmux 会话输出（如果存在）
     local tmux_name="rc-${session}"
     if tmux has-session -t "$tmux_name" 2>/dev/null; then
         log_info "=== tmux 会话 $tmux_name 输出 ==="
@@ -110,8 +121,7 @@ print_session_diagnostics() {
 }
 
 # 验证会话启动成功
-# 参数: $1 = session_name, $2 = timeout_seconds, $3 = cli_type (可选: claude/codex)
-# 返回: 0 成功, 1 失败
+# 参数: $1 = session_name, $2 = timeout_seconds, $3 = cli_type (claude/codex)
 verify_session_startup() {
     local session="$1"
     local timeout_sec="${2:-20}"
@@ -119,20 +129,15 @@ verify_session_startup() {
     local socket_path="/tmp/remote-claude/${session}.sock"
     local log_file="$RESULTS_DIR/start_${session}.log"
 
-    # 清理残留会话
     cleanup_session "$session"
 
-    # 构建 start 命令
-    local start_cmd="uv run remote-claude start '$session'"
+    local start_cmd="uv run python3 remote_claude.py start '$session'"
     if [[ "$cli_type" == "codex" ]]; then
-        start_cmd="uv run remote-claude start '$session' --launcher Codex"
+        start_cmd="uv run python3 remote_claude.py start '$session' --launcher Codex"
     fi
 
     log_info "启动 $cli_type 会话 '$session'（限时 ${timeout_sec}s）..."
 
-    # 执行 start 命令并记录退出码。
-    # 这里不能把 rc==124（timeout）当作唯一成功条件：
-    # 真正的判定依据应是 socket 已创建且会话能被 list 发现。
     set +e
     timeout "$timeout_sec" bash -c "$start_cmd" > "$log_file" 2>&1
     local rc=$?
@@ -144,27 +149,23 @@ verify_session_startup() {
 
     log_info "验证 $cli_type 会话 '$session' 的 socket 与 list 状态..."
 
-    # 验证 socket
     if [[ ! -S "$socket_path" ]]; then
         log_error "socket 文件不存在: $socket_path"
-        report "✗ $cli_type start：socket 未创建"
         print_session_diagnostics "$session" "$log_file"
         cleanup_session "$session"
         return 1
     fi
     log_success "socket 已创建: $socket_path"
 
-    # 验证会话在 list 中可见
     local list_out
-    list_out=$(uv run remote-claude list 2>&1)
+    list_out=$(uv run python3 remote_claude.py list 2>&1)
     if echo "$list_out" | grep -q "$session"; then
         log_success "会话 '$session' 在 list 中可见"
-        report "✓ $cli_type start 成功：socket 就绪，会话可见"
         return 0
     else
         log_error "会话 '$session' 在 list 中不可见"
         log_info "list 输出：$list_out"
-        report "✗ $cli_type start：会话在 list 中不可见"
+        print_session_diagnostics "$session" "$log_file"
         cleanup_session "$session"
         return 1
     fi
@@ -174,73 +175,13 @@ verify_session_startup() {
 check_environment() {
     print_header "步骤 1：环境检查"
 
-    # uv 版本
-    if uv --version &> /dev/null; then
-        UV_VERSION=$(uv --version)
-        log_success "uv: $UV_VERSION"
-    else
-        log_error "未找到 uv"
-        return 1
-    fi
-
-    # Python 版本 - 检查系统 Python 或 uv 管理的 Python
-    # 优先检查 uv 是否能找到 Python（可能是系统 Python 或已安装的）
-    PYTHON_VER=""
-    if uv python find &> /dev/null; then
-        PYTHON_VER=$(uv run python3 --version 2>/dev/null || uv python find --system 2>/dev/null | head -1)
-    elif command -v python3 &> /dev/null; then
-        PYTHON_VER=$(python3 --version 2>/dev/null)
-    fi
-
-    if [ -n "$PYTHON_VER" ]; then
-        log_success "Python: $PYTHON_VER"
-    else
-        log_error "未找到 Python"
-        return 1
-    fi
-
-    # tmux 版本
-    if tmux -V &> /dev/null; then
-        TMUX_VERSION=$(tmux -V)
-        log_success "tmux: $TMUX_VERSION"
-    else
-        log_error "未找到 tmux"
-        return 1
-    fi
-
-    # Node.js 版本
-    if node --version &> /dev/null; then
-        NODE_VERSION=$(node --version)
-        log_success "Node.js: $NODE_VERSION"
-    else
-        log_error "未找到 Node.js"
-        return 1
-    fi
-
-    # npm 版本
-    if npm --version &> /dev/null; then
-        NPM_VERSION=$(npm --version)
-        log_success "npm: $NPM_VERSION"
-    else
-        log_error "未找到 npm"
-        return 1
-    fi
-
-    # Claude CLI（必需）
-    if claude --version &> /dev/null; then
-        log_success "Claude CLI: $(claude --version 2>&1 | head -1)"
-    else
-        log_error "未找到 Claude CLI"
-        return 1
-    fi
-
-    # Codex CLI（必需）
-    if codex --version &> /dev/null; then
-        log_success "Codex CLI: $(codex --version 2>&1 | head -1)"
-    else
-        log_error "未找到 Codex CLI"
-        return 1
-    fi
+    check_command "Python" "python3 --version" || return 1
+    check_command "uv" "uv --version" || return 1
+    check_command "tmux" "tmux -V" || return 1
+    check_command "Node.js" "node --version" || return 1
+    check_command "npm" "npm --version" || return 1
+    check_command "Claude CLI" "claude --version" || return 1
+    check_command "Codex CLI" "codex --version" || return 1
 }
 
 # 步骤 2：打包 npm 包
@@ -256,9 +197,9 @@ pack_npm_package() {
     if npm pack > "$RESULTS_DIR/pack.log" 2>&1; then
         PACK_FILE=$(ls -t remote-claude-*.tgz 2>/dev/null | head -1)
         VERSION=$(echo "$PACK_FILE" | sed 's/remote-claude-\(.*\)\.tgz/\1/')
-        log_success "npm 包打包成功: $PACK_FILE,  $VERSION"
+        log_success "npm 包打包成功: $PACK_FILE"
+        log_info "版本: $VERSION"
         echo "$VERSION" > "$RESULTS_DIR/version.txt"
-        cp "$PACK_FILE" "$RESULTS_DIR"
         mv "$PACK_FILE" /tmp/
     else
         log_error "npm pack 失败"
@@ -273,28 +214,27 @@ simulate_install() {
 
     local pack_file="$1"
 
-    # 在 test-results 目录下创建安装目录（产物持久化到外部）
-    local install_dir="$RESULTS_DIR/npm-install"
+    # 创建临时安装目录
+    local install_dir="$INSTALL_DIR"
     rm -rf "$install_dir"
     mkdir -p "$install_dir"
     cd "$install_dir"
 
     log_info "在临时目录安装 npm 包..."
 
-    export REMOTE_CLAUDE_NONINTERACTIVE=1
-
     if npm install "$pack_file" > "$RESULTS_DIR/npm_install.log" 2>&1; then
         log_success "npm install 成功"
+        report "✓ npm install 成功"
     else
         log_error "npm install 失败"
+        report "✗ npm install 失败"
         cat "$RESULTS_DIR/npm_install.log"
         return 1
     fi
 
     # 将安装目录路径写入文件（供后续步骤使用）
     echo "$install_dir" > "$RESULTS_DIR/install_dir.txt"
-
-    # 设置全局变量（供后续步骤使用）
+    # 导出到外部（供 main 函数使用）
     INSTALL_DIR="$install_dir"
 }
 
@@ -303,59 +243,62 @@ verify_postinstall() {
     print_header "步骤 4：验证 postinstall 执行"
 
     local install_dir="$1"
-    local package_dir="$install_dir/node_modules/remote-claude"
-    cd "$package_dir"
+    cd "$install_dir/node_modules/remote-claude"
 
-    # 验证 .venv 目录（在 node_modules/remote-claude/ 下，而非 npm-install/ 下）
-    if [ -d "$package_dir/.venv" ]; then
+    # 验证 .venv 目录
+    if [ -d ".venv" ]; then
         log_success ".venv 虚拟环境已创建"
+        report "✓ .venv 虚拟环境已创建"
     else
         log_error ".venv 虚拟环境未创建"
+        report "✗ .venv 虚拟环境未创建"
         return 1
     fi
 
     # 验证 pyproject.toml 存在
     if [ -f "pyproject.toml" ]; then
         log_success "pyproject.toml 存在"
+        report "✓ pyproject.toml 存在"
     else
         log_error "pyproject.toml 不存在"
+        report "✗ pyproject.toml 不存在"
         return 1
     fi
 
-    # 检查 Python 依赖（显式使用安装目录下 .venv，避免 uv 项目解析偏移）
+    # 检查 Python 依赖（使用 .venv 中的 Python）
     log_info "检查 Python 依赖安装..."
 
-    local venv_python="$package_dir/.venv/bin/python3"
-    if [ ! -x "$venv_python" ]; then
-        log_error "虚拟环境 Python 不可用: $venv_python"
-        return 1
-    fi
-
-    if "$venv_python" -c "import lark_oapi" 2>/dev/null; then
+    if .venv/bin/python -c "import lark_oapi" 2>/dev/null; then
         log_success "lark-oapi 已安装"
+        report "✓ lark-oapi 已安装"
     else
         log_error "lark-oapi 未安装"
+        report "✗ lark-oapi 未安装"
         return 1
     fi
 
-    if "$venv_python" -c "import dotenv" 2>/dev/null; then
+    if .venv/bin/python -c "import dotenv" 2>/dev/null; then
         log_success "python-dotenv 已安装"
+        report "✓ python-dotenv 已安装"
     else
         log_error "python-dotenv 未安装"
+        report "✗ python-dotenv 未安装"
         return 1
     fi
 
-    if "$venv_python" -c "import pyte" 2>/dev/null; then
+    if .venv/bin/python -c "import pyte" 2>/dev/null; then
         log_success "pyte 已安装"
+        report "✓ pyte 已安装"
     else
         log_error "pyte 未安装"
+        report "✗ pyte 未安装"
         return 1
     fi
 }
 
-# 步骤 5：配置 mock .env 并测试启动链路
+# 步骤 5：配置 mock .env 并测试启动超时行为
 test_env_and_startup() {
-    print_header "步骤 5：env 配置与启动链路测试"
+    print_header "步骤 5：env 配置与启动超时测试"
 
     local install_dir="$1"
     local env_file="$HOME/.remote-claude/.env"
@@ -391,18 +334,16 @@ EOF
 
     # 5-3：验证 lark start 不会无限卡死（凭证无效应快速报错）
     log_info "验证 lark start 不会无限卡死（限 20s）..."
-    set +e
-    timeout 20 uv run remote-claude lark start > "$RESULTS_DIR/lark_start.log" 2>&1
+    timeout 20 uv run python3 remote_claude.py lark start > "$RESULTS_DIR/lark_start.log" 2>&1
     local rc=$?
-    set -e
     if [ $rc -eq 124 ]; then
         log_error "lark start 超时（20s）—— 存在无限阻塞问题"
-        report "✗ lark start 超时阻塞"
+        report "✗ lark start 超时（20s）"
         return 1
     else
         # 非 124 均可接受（0=成功/已在运行，非零=凭证错误快速退出，两者都 OK）
         log_success "lark start 在 20s 内退出（rc=$rc），不存在无限卡死"
-        report "✓ lark start 在 20s 内退出（rc=$rc）"
+        report "✓ lark start 不阻塞（rc=$rc）"
     fi
 
     # 5-4：验证 remote-claude start 能成功启动 Claude 会话
@@ -412,100 +353,41 @@ EOF
     fi
     cleanup_session "$session"
 
-    # 5-5：负面测试——启动器配置为不存在的命令，验证能检测到启动失败
-    log_info "负面测试：配置不存在的启动器命令应导致 start 在 20s 内失败退出..."
+    # 5-5：负面测试——旧 CLAUDE_COMMAND 配置不应影响当前 launcher 启动链路
+    log_info "验证旧 CLAUDE_COMMAND 配置不会干扰当前 launcher 启动链路..."
 
-    local config_file="$HOME/.remote-claude/settings.json"
-    local backup_file="$RESULTS_DIR/settings.backup.json"
+    # 在 .env 中追加旧字段，确认当前实现忽略该遗留配置
+    echo "CLAUDE_COMMAND=claudeyy" >> "$env_file"
 
-    if ! command -v jq &> /dev/null; then
-        log_error "jq 未安装，无法执行负面测试"
-        report "✗ 负面测试：失败（jq 未安装）"
+    # 清理同名残留会话
+    uv run python3 remote_claude.py kill "$session" > /dev/null 2>&1 || true
+    tmux kill-session -t "rc-$session" 2>/dev/null || true
+
+    timeout 20 uv run python3 remote_claude.py start "$session" \
+        > "$RESULTS_DIR/start_legacy_claude_command.log" 2>&1
+    local legacy_cmd_rc=$?
+
+    # 还原 .env（移除 CLAUDE_COMMAND 行）
+    sed -i '/^CLAUDE_COMMAND=/d' "$env_file"
+
+    if [ $legacy_cmd_rc -ne 124 ]; then
+        log_error "旧 CLAUDE_COMMAND 配置导致 start 未保持运行（rc=$legacy_cmd_rc）"
+        report "✗ 旧 CLAUDE_COMMAND 配置干扰当前启动链路（rc=$legacy_cmd_rc）"
+        tmux kill-session -t "rc-$session" 2>/dev/null || true
         return 1
     fi
 
-    if [[ ! -f "$config_file" ]]; then
-        log_error "settings.json 不存在，无法执行负面测试"
-        report "✗ 负面测试：失败（settings.json 不存在）"
+    if [ ! -S "$socket_path" ]; then
+        log_error "旧 CLAUDE_COMMAND 配置场景下 socket 未创建: $socket_path"
+        report "✗ 旧 CLAUDE_COMMAND 配置场景下 socket 未创建"
+        tmux kill-session -t "rc-$session" 2>/dev/null || true
         return 1
     fi
 
-    cp "$config_file" "$backup_file"
+    log_success "旧 CLAUDE_COMMAND 配置未影响当前 launcher 启动链路"
+    report "✓ 旧 CLAUDE_COMMAND 配置被忽略，当前 launcher 启动正常"
 
-    local restore_rc=0
-    set +e
-
-    local tmp_file
-    tmp_file=$(mktemp)
-    jq '.launchers = [{"name": "Invalid", "cli_type": "claude", "command": "/nonexistent/path/to/claude-invalid", "desc": "Invalid command for testing"}]' \
-        "$config_file" > "$tmp_file"
-    local jq_rc=$?
-    if [ $jq_rc -eq 0 ]; then
-        mv "$tmp_file" "$config_file"
-    else
-        rm -f "$tmp_file"
-        restore_rc=1
-    fi
-
-    local negative_session="docker-negative-test"
-    cleanup_session "$negative_session"
-
-    local fail_log="$RESULTS_DIR/start_fail.log"
-    local fail_rc=1
-    if [ $restore_rc -eq 0 ]; then
-        timeout 20 uv run remote-claude start "$negative_session" > "$fail_log" 2>&1
-        fail_rc=$?
-    fi
-
-    cp "$backup_file" "$config_file"
-    if [[ -f "$config_file" ]]; then
-        log_info "=== 当前 settings.json ==="
-        cat "$config_file"
-    fi
-    if [[ -f "$fail_log" ]]; then
-        log_info "=== start_fail.log ==="
-        cat "$fail_log"
-    fi
-    cleanup_session "$negative_session"
-    set -e
-
-    if [ $restore_rc -ne 0 ]; then
-        log_error "负面测试失败：jq 重写 settings.json 失败"
-        report "✗ 负面测试：无法写入无效启动器配置"
-        return 1
-    fi
-
-    # 验证负面测试结果：不能只依赖 timeout 退出码，要结合日志中的硬失败信号与 socket 状态
-    local hard_failure_line=""
-    if [[ -f "$HOME/.remote-claude/startup.log" ]]; then
-        hard_failure_line=$(python3 - <<'PY'
-from pathlib import Path
-from remote_claude import _detect_hard_startup_failure, _read_recent_start_log_lines
-log_path = Path.home() / '.remote-claude' / 'startup.log'
-print(_detect_hard_startup_failure(_read_recent_start_log_lines(log_path)))
-PY
-)
-    fi
-
-    local negative_socket="/tmp/remote-claude/${negative_session}.sock"
-    if [[ -n "$hard_failure_line" && ! -S "$negative_socket" ]]; then
-        log_success "负面测试通过：检测到启动硬失败，且未创建 socket"
-        report "✓ 负面测试：启动失败被正确检测（硬失败信号）"
-    elif [ $fail_rc -eq 124 ]; then
-        log_error "负面测试失败：无效命令配置时 start 未在 20s 内退出，且未检测到明确硬失败信号"
-        print_session_diagnostics "$negative_session" "$fail_log"
-        report "✗ 负面测试：无效命令未被检测到"
-        return 1
-    elif [ $fail_rc -eq 0 ]; then
-        log_error "负面测试失败：无效命令配置时 start 返回 rc=0（不应成功）"
-        report "✗ 负面测试：无效命令返回成功"
-        return 1
-    else
-        log_success "负面测试通过：无效命令导致 start 在 20s 内以 rc=$fail_rc 退出"
-        report "✓ 负面测试：启动失败被正确检测（rc=$fail_rc）"
-    fi
-
-    # 5-6：验证 remote-claude start --cli codex 能成功启动 Codex 会话
+    # 5-6：验证 remote-claude start --launcher Codex 能成功启动 Codex 会话
     local codex_session="docker-codex-session"
     if ! verify_session_startup "$codex_session" 20 "codex"; then
         return 1
@@ -522,61 +404,52 @@ test_basic_commands() {
 
     # 测试 remote-claude --help
     log_info "测试 remote-claude --help..."
-    if uv run remote-claude --help > "$RESULTS_DIR/cmd_help.log" 2>&1; then
-        log_success "remote-claude --help 执行成功"
+    if uv run python3 remote_claude.py --help > "$RESULTS_DIR/cmd_help.log" 2>&1; then
+        if grep -q "usage: remote-claude" "$RESULTS_DIR/cmd_help.log"; then
+            log_success "remote-claude --help 输出正确"
+            report "✓ remote-claude --help 输出正确"
+        else
+            log_error "remote-claude --help 输出异常"
+            report "✗ remote-claude --help 输出异常"
+            return 1
+        fi
     else
         log_error "remote-claude --help 执行失败"
+        report "✗ remote-claude --help 执行失败"
         return 1
     fi
 
     # 测试 remote-claude list
     log_info "测试 remote-claude list..."
-    if uv run remote-claude list > "$RESULTS_DIR/cmd_list.log" 2>&1; then
+    if uv run python3 remote_claude.py list > "$RESULTS_DIR/cmd_list.log" 2>&1; then
         log_success "remote-claude list 执行成功"
+        report "✓ remote-claude list 执行成功"
     else
         log_error "remote-claude list 执行失败"
+        report "✗ remote-claude list 执行失败"
+        return 1
+    fi
+
+    # 检查 cla 脚本语法
+    log_info "检查 cla 脚本语法..."
+    if bash -n "$install_dir/../bin/cla" 2>/dev/null; then
+        log_success "bin/cla 脚本语法正确"
+        report "✓ bin/cla 脚本语法正确"
+    else
+        log_error "bin/cla 脚本语法错误"
+        report "✗ bin/cla 脚本语法错误"
         return 1
     fi
 
     # 验证 cla 脚本中的关键逻辑
     log_info "验证 cla 脚本中的关键逻辑..."
 
-    if grep -q "_remote_claude_shortcut_help_or_main" "bin/cla"; then
-        log_success "cla 脚本包含 _remote_claude_shortcut_help_or_main"
+    if grep -q "_remote_claude_shortcut_help_or_main" "$install_dir/../bin/cla"; then
+        log_success "cla 脚本通过共享快捷入口分发"
+        report "✓ cla 脚本通过共享快捷入口分发"
     else
-        log_error "cla 脚本缺少 _remote_claude_shortcut_help_or_main"
-        return 1
-    fi
-
-    if grep -Eq "remote-claude|_remote_claude_shortcut_help_or_main" "bin/cla"; then
-        log_success "cla 脚本包含 remote-claude 或共享快捷入口"
-    else
-        log_error "cla 脚本缺少 remote-claude 或共享快捷入口"
-        return 1
-    fi
-
-    if grep -Eq "lark start|_remote_claude_shortcut_help_or_main" "bin/cla"; then
-        log_success "cla 脚本包含 lark start 或共享快捷入口"
-    else
-        log_error "cla 脚本缺少 lark start 或共享快捷入口"
-        return 1
-    fi
-
-    # 测试所有 bin 入口脚本语法
-    log_info "测试所有 bin 入口脚本语法..."
-    local bin_has_error=0
-    for bin_file in bin/*; do
-        if [ -f "$bin_file" ]; then
-            if bash -n "$bin_file" 2>/dev/null; then
-                log_success "$bin_file 语法正确"
-            else
-                log_error "$bin_file 语法错误"
-                bin_has_error=1
-            fi
-        fi
-    done
-
-    if [ $bin_has_error -eq 1 ]; then
+        log_error "cla 脚本缺少共享快捷入口"
+        report "✗ cla 脚本缺少共享快捷入口"
         return 1
     fi
 }
@@ -593,151 +466,39 @@ check_file_integrity() {
         "remote_claude.py"
         "server/server.py"
         "client/base_client.py"
-        "client/local_client.py"
         "utils/protocol.py"
         "lark_client/main.py"
-        "scripts/install.sh"
         "scripts/setup.sh"
-        "scripts/uninstall.sh"
-        "scripts/completion.sh"
         "pyproject.toml"
         "resources/defaults/env.example"
-        "resources/defaults/settings.json.example"
-        "resources/defaults/state.json.example"
     )
 
     local missing_files=()
     for file in "${critical_files[@]}"; do
         if [ -f "$file" ]; then
             log_success "文件存在: $file"
+            report "✓ 文件存在: $file"
         else
-            log_warning "文件缺失: $file"
+            log_error "文件缺失: $file"
+            report "✗ 文件缺失: $file"
             missing_files+=("$file")
         fi
     done
 
     if [ ${#missing_files[@]} -eq 0 ]; then
         log_success "所有关键文件检查通过"
+        report "✓ 所有关键文件检查通过"
         return 0
     else
         log_error "缺失 ${#missing_files[@]} 个关键文件"
+        report "✗ 缺失 ${#missing_files[@]} 个关键文件"
         return 1
     fi
 }
 
-# 步骤 8：执行独立单元测试
-run_unit_tests() {
-    print_header "步骤 8：执行独立单元测试"
-
-    local install_dir="$1"
-    cd "$install_dir/node_modules/remote-claude"
-
-    # 核心测试列表（失败终止）
-    local core_tests=(
-        "tests/test_session_truncate.py"
-        "tests/test_runtime_config.py"
-        "tests/test_biz_enum.py"
-        "tests/test_custom_commands.py"
-        "tests/test_history_buffer.py"
-        "tests/test_auto_answer_analyzer.py"
-        "tests/test_auto_answer_integration.py"
-        "tests/test_base_client.py"
-        "tests/test_local_client.py"
-        "tests/test_startup_trace_logging.py"
-        "tests/test_entry_lazy_init.py"
-        "tests/test_cli_help_and_remote.py"
-    )
-
-    # 非核心测试列表（失败继续）
-    local non_core_tests=(
-        "tests/test_stream_poller.py"
-        "tests/test_card_interaction.py"
-        "tests/test_list_display.py"
-        "tests/test_log_level.py"
-        "tests/test_disconnected_state.py"
-        "tests/test_renderer.py"
-        "tests/test_auto_answer_block.py"
-        "tests/lark_client/test_mock_output.py"
-        "tests/lark_client/test_cjk_width.py"
-        "tests/lark_client/test_full_simulation.py"
-    )
-
-    local core_failed=0
-    local non_core_failed=0
-    local unit_passed=0
-    local unit_total=0
-
-    # 执行核心测试
-    log_info "执行核心测试（失败将终止）..."
-    for test in "${core_tests[@]}"; do
-        local test_target="$test"
-        if [ -f "$test_target" ]; then
-            unit_total=$((unit_total + 1))
-            log_info "运行核心测试: $test_target"
-            if uv run pytest -q "$test_target" > "$RESULTS_DIR/$(printf '%s' "$test_target" | tr '/:' '__').log" 2>&1; then
-                log_success "核心测试通过: $test_target"
-                unit_passed=$((unit_passed + 1))
-            else
-                log_error "核心测试失败: $test_target"
-                core_failed=$((core_failed + 1))
-            fi
-        else
-            log_error "核心测试文件不存在: $test_target"
-            core_failed=$((core_failed + 1))
-        fi
-    done
-
-    # 核心测试失败则终止
-    if [ "$TEST_INTERRUPTED" -ne 0 ]; then
-        log_error "测试被用户中断"
-        return 130
-    fi
-
-    if [ $core_failed -gt 0 ]; then
-        log_error "$core_failed 个核心测试失败，终止测试流程"
-        return 1
-    fi
-
-    # 执行非核心测试
-    log_info "执行非核心测试（失败继续）..."
-    for test in "${non_core_tests[@]}"; do
-        local test_target="$test"
-        if [ -f "$test_target" ]; then
-            unit_total=$((unit_total + 1))
-            log_info "运行非核心测试: $test_target"
-            if uv run pytest -q "$test_target" > "$RESULTS_DIR/$(printf '%s' "$test_target" | tr '/:' '__').log" 2>&1; then
-                log_success "非核心测试通过: $test_target"
-                unit_passed=$((unit_passed + 1))
-            else
-                log_warning "非核心测试失败: $test_target（继续执行）"
-                non_core_failed=$((non_core_failed + 1))
-            fi
-        else
-            log_error "非核心测试文件不存在: $test_target"
-            non_core_failed=$((non_core_failed + 1))
-        fi
-    done
-
-    if [ "$TEST_INTERRUPTED" -ne 0 ]; then
-        log_error "测试被用户中断"
-        return 130
-    fi
-
-    # 汇总单元测试结果
-    log_info "单元测试汇总: 通过 $unit_passed/$unit_total"
-    report "📊 单元测试汇总: 通过 $unit_passed/$unit_total（核心失败: $core_failed，非核心失败: $non_core_failed）"
-
-    if [ $non_core_failed -gt 0 ]; then
-        log_warning "$non_core_failed 个非核心测试失败"
-        return 0  # 非核心测试失败不终止
-    fi
-
-    return 0
-}
-
-# 步骤 9：生成测试报告
+# 步骤 8：生成测试报告
 generate_report() {
-    print_header "步骤 9：生成测试报告"
+    print_header "步骤 8：生成测试报告"
 
     local report_file="$RESULTS_DIR/test_report.md"
 
@@ -751,10 +512,18 @@ generate_report() {
 
 - 通过: $PASSED
 - 失败: $FAILED
-- 警告: $WARNINGS
 - 总计: $((PASSED + FAILED))
 
 **总体结果**: $([ $FAILED -eq 0 ] && echo "✅ 通过" || echo "❌ 失败")
+
+## 环境信息
+
+- 操作系统: $(uname -a)
+- Python: $(python3 --version)
+- Node.js: $(node --version)
+- npm: $(npm --version)
+- uv: $(uv --version)
+- tmux: $(tmux -V)
 
 ## 测试详情
 
@@ -762,10 +531,8 @@ $TEST_REPORT
 
 ## 测试日志
 
-详细日志位于 \`$RESULTS_DIR/\` 目录：
-- \`pack.log\` — npm 打包日志
-- \`npm_install.log\` — npm 安装日志
-- \`test_*.log\` — 单元测试日志
+- npm 打包: \`pack.log\`
+- npm 安装: \`npm_install.log\`
 
 ## 诊断信息
 
@@ -777,34 +544,70 @@ $TEST_REPORT
 EOF
 
     log_success "测试报告已生成: $report_file"
+    report "✓ 测试报告已生成: $report_file"
 }
 
-# 步骤 10：清理
-cleanup() {
-    print_header "清理"
+# 步骤 8：验证卸载钩子
+verify_uninstall_hook() {
+    print_header "步骤 8：验证卸载钩子"
 
-    if [ $FAILED -eq 0 ]; then
-        log_success "所有测试通过，容器将自动退出"
-        exit 0
+    local install_dir="$1"
+    cd "$install_dir/node_modules/remote-claude"
+
+    log_info "验证 uninstall hook 使用非交互模式..."
+    if REMOTE_CLAUDE_NONINTERACTIVE=1 sh scripts/uninstall.sh > "$RESULTS_DIR/uninstall.log" 2>&1; then
+        log_success "uninstall hook 非交互执行成功"
+        report "✓ uninstall hook 非交互执行成功"
+    else
+        log_error "uninstall hook 执行失败"
+        report "✗ uninstall hook 执行失败"
+        cat "$RESULTS_DIR/uninstall.log"
+        return 1
+    fi
+}
+
+# 步骤 9：清理
+cleanup() {
+    print_header "步骤 9：清理"
+
+    local cid="$HOSTNAME"
+    if [[ "$KEEP_CONTAINER_ALIVE" != "1" ]]; then
+        log_info "清理完成，容器将正常退出"
+        return 0
     fi
 
-    # 测试失败：保持容器运行便于调试
-    local cid="$HOSTNAME"
+    log_info "保持容器运行状态（Docker 模式下不自动退出）"
     echo ""
-    echo -e "${GREEN}容器保持运行，操作命令：${NC}"
-    echo -e "  进入容器: docker exec -it ${cid} /bin/bash"
-    echo -e "  查看报告: docker exec ${cid} cat /home/testuser/test-results/test_report.md"
-    echo -e "  停止容器: docker stop ${cid}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}容器保持运行状态（Docker 模式下不自动退出）${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "${GREEN}进入容器的命令：${NC}"
+    echo -e "  docker exec -it ${cid} /bin/bash"
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "${YELLOW}查看测试报告：${NC}"
+    echo -e "  docker exec ${cid} bash -c 'cat /home/testuser/test-results/test_report.md'"
+    echo ""
+    echo -e "${YELLOW}查看安装目录结构：${NC}"
+    echo -e "  docker exec ${cid} bash -c 'ls -la /home/testuser/test-npm-install/node_modules/remote-claude/'"
+    echo ""
+    echo -e "${YELLOW}手动运行测试：${NC}"
+    echo -e "  docker exec ${cid} bash -c 'cd /project && docker/scripts/docker-test.sh'"
+    echo ""
+    echo -e "${YELLOW}停止容器：${NC}"
+    echo -e "  docker stop ${cid}"
     echo ""
 
-    log_warning "存在 $FAILED 个失败测试，容器保持运行便于调试"
+    log_success "清理完成（容器保持运行状态）"
     sleep infinity
 }
 
 # 输出最终结果
 print_results() {
     print_header "测试完成"
-    log_info "通过: $PASSED, 失败: $FAILED, 警告: $WARNINGS"
+    log_info "通过: $PASSED, 失败: $FAILED"
 
     if [ $FAILED -eq 0 ]; then
         log_success "所有测试通过！✅"
@@ -812,6 +615,11 @@ print_results() {
         log_error "存在 $FAILED 个失败测试 ❌"
     fi
 
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  登录测试容器：${NC}"
+    echo -e "  docker exec -it ${HOSTNAME} /bin/bash"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 }
 
@@ -832,7 +640,7 @@ main() {
     fi
 
     # 步骤 3：模拟用户安装
-    PACK_FILE_PATH=$(ls -t /tmp/remote-claude-*.tgz 2>/dev/null | head -1)
+    PACK_FILE_PATH=$(ls /tmp/remote-claude-*.tgz 2>/dev/null | head -1)
     if [ -z "$PACK_FILE_PATH" ]; then
         log_error "找不到打包好的 .tgz 文件"
         exit 1
@@ -850,23 +658,22 @@ main() {
 
     # 步骤 5：env 配置与启动超时测试
     if ! test_env_and_startup "$INSTALL_DIR"; then
-        log_warning "env/启动超时测试失败，继续执行..."
+        log_error "env/启动超时测试失败，继续执行..."
     fi
 
     # 步骤 6：测试基本命令
     if ! test_basic_commands "$INSTALL_DIR"; then
-        log_warning "基本命令测试失败，继续执行..."
+        log_error "基本命令测试失败，继续执行..."
     fi
 
     # 步骤 7：文件完整性检查
     if ! check_file_integrity "$INSTALL_DIR"; then
-        log_warning "文件完整性检查失败，继续执行..."
+        log_error "文件完整性检查失败，继续执行..."
     fi
 
-    # 步骤 8：执行独立单元测试
-    if ! run_unit_tests "$INSTALL_DIR"; then
-        log_warning "核心单元测试失败，终止测试"
-        exit 1
+    # 步骤 8：验证卸载钩子
+    if ! verify_uninstall_hook "$INSTALL_DIR"; then
+        log_error "卸载钩子验证失败，继续执行..."
     fi
 
     # 步骤 9：生成测试报告

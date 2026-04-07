@@ -150,25 +150,28 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 FEISHU_APP_ID=your_app_id
 FEISHU_APP_SECRET=your_app_secret
 
-# === 可选 ===
-USER_WHITELIST=user1,user2
-GROUP_PREFIX=Remote-Claude
-LOG_LEVEL=INFO
-STARTUP_TIMEOUT=5
+# === 可选（推荐使用新变量名，旧变量名仍兼容） ===
+ENABLE_USER_WHITELIST=false
+ALLOWED_USERS=user1,user2
+GROUP_NAME_PREFIX=【Remote-Claude】
+LARK_LOG_LEVEL=WARNING
 MAX_CARD_BLOCKS=50
-NO_PROXY=0
+LARK_NO_PROXY=0
+
+# 兼容旧变量名：
+# USER_WHITELIST / GROUP_PREFIX / LOG_LEVEL / NO_PROXY
 ```
 
 | 配置项 | 说明 |
 |--------|------|
 | `FEISHU_APP_ID` | 飞书应用 ID（必填） |
 | `FEISHU_APP_SECRET` | 飞书应用密钥（必填） |
-| `USER_WHITELIST` | 用户白名单（逗号分隔） |
-| `GROUP_PREFIX` | 群聊名称前缀 |
-| `LOG_LEVEL` | 日志级别（DEBUG/INFO/WARNING/ERROR） |
-| `STARTUP_TIMEOUT` | 启动超时时间（秒） |
-| `MAX_CARD_BLOCKS` | 卡片最大块数 |
-| `NO_PROXY` | 是否禁用代理（0/1） |
+| `ENABLE_USER_WHITELIST` | 是否启用用户白名单（true/false） |
+| `ALLOWED_USERS` | 用户白名单（逗号分隔） |
+| `GROUP_NAME_PREFIX` | 群聊名称前缀 |
+| `LARK_LOG_LEVEL` | 飞书客户端日志级别（DEBUG/INFO/WARNING/ERROR） |
+| `MAX_CARD_BLOCKS` | 单张卡片最大 block 数 |
+| `LARK_NO_PROXY` | 检测到 SOCKS 代理时是否绕过（0/1） |
 
 ## 配置重置
 

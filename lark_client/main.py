@@ -8,7 +8,6 @@ Remote Claude 飞书客户端
 import asyncio
 import json
 import logging
-import logging
 import os
 import signal
 import sys
@@ -18,34 +17,51 @@ from pathlib import Path
 
 # 设置 sys.path 以导入 utils 模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils.session import USER_DATA_DIR
-from utils.logging_setup import setup_role_logging
 from utils.runtime_config import get_lark_enter_submit_enabled
+from utils.session import USER_DATA_DIR
 
 
 def _setup_logging():
-    """配置 lark_client 主日志到统一轮转日志文件"""
+    """配置 lark_client 日志：INFO → lark_client.log, DEBUG → lark_client.debug.log"""
     from .config import LARK_LOG_LEVEL
 
-    role_logger = setup_role_logging("lark", level=LARK_LOG_LEVEL)
+    log_dir = USER_DATA_DIR
+    log_dir.mkdir(parents=True, exist_ok=True)
 
+    # 日志格式（含毫秒级时间戳）
+    log_format = "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(log_format, datefmt=date_format)
+
+    # 根 logger 配置
     root_logger = logging.getLogger()
     root_logger.setLevel(LARK_LOG_LEVEL)
+
+    # 清除默认 handler
     root_logger.handlers.clear()
 
-    for handler in role_logger.handlers:
-        root_logger.addHandler(handler)
+    # 正常日志文件（INFO 及以上）
+    info_handler = logging.FileHandler(log_dir / "lark_client.log", encoding="utf-8")
+    info_handler.setLevel(logging.INFO)
+    info_handler.setFormatter(formatter)
+    root_logger.addHandler(info_handler)
 
+    # 调试日志文件（DEBUG 及以上，仅当 LARK_LOG_LEVEL=DEBUG 时写入）
+    if LARK_LOG_LEVEL == logging.DEBUG:
+        debug_handler = logging.FileHandler(log_dir / "lark_client.debug.log", encoding="utf-8")
+        debug_handler.setLevel(logging.DEBUG)
+        debug_handler.setFormatter(formatter)
+        root_logger.addHandler(debug_handler)
+
+    # 第三方库保持 INFO 级别
     for _noisy in ('urllib3', 'websockets', 'asyncio'):
         logging.getLogger(_noisy).setLevel(logging.INFO)
 
+    # 控制台输出（仅在终端交互模式下启用，守护进程模式下 stderr 已重定向到日志文件）
     if sys.stderr.isatty():
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(logging.Formatter(
-            "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
+        console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
 
 
@@ -61,8 +77,6 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 
 from . import config
 from .lark_handler import handler
-
-logger = logging.getLogger(__name__)
 
 
 async def _graceful_shutdown() -> None:
@@ -156,22 +170,16 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         # 检测 form 提交（输入框 Enter ↵ 按钮）
         form_value = getattr(action, 'form_value', None)
         if form_value is not None:
-            action_value = action.value or {}
-            submit_source = action_value.get("submit_source", "enter_key") if isinstance(action_value, dict) else "enter_key"
             command_text = (form_value.get("command") or "").strip()
-            print(
-                f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}, "
-                f"source={submit_source}"
-            )
-
-            enter_submit_enabled = get_lark_enter_submit_enabled(handler._settings)
-            if command_text and not enter_submit_enabled and submit_source != "button_click":
-                asyncio.create_task(handler.handle_disabled_enter_submit(user_id, chat_id))
-                return None
-
+            submit_source = action_value.get("submit_source", "")
+            print(f"[Lark] form 提交: user={user_id[:8]}..., command={command_text!r}, source={submit_source!r}")
             if command_text:
-                # 有输入内容 → 直通 Claude
-                asyncio.create_task(handler.forward_to_claude(user_id, chat_id, command_text))
+                enter_enabled = get_lark_enter_submit_enabled()
+                attached_session = handler._chat_sessions.get(chat_id)
+                if not enter_enabled and submit_source != "button_click" and attached_session:
+                    asyncio.create_task(handler.handle_disabled_enter_submit(user_id, chat_id, command_text))
+                else:
+                    asyncio.create_task(handler.forward_to_claude(user_id, chat_id, command_text))
             else:
                 # 空输入 → 发送原始 Enter 键（用于确认默认选项等场景）
                 asyncio.create_task(handler.send_raw_key(user_id, chat_id, "enter"))
@@ -187,7 +195,6 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
                     "up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"
                 }
                 if key_name not in allowed:
-                    logger.warning("忽略未启用的 key 动作: %s", key_name)
                     return None
 
                 print(f"[Lark] 操作下拉快捷键: key={key_name}")
@@ -214,7 +221,6 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
                 asyncio.create_task(handler.handle_quick_command(user_id, chat_id, action_value))
                 return None
 
-            logger.warning("忽略未知字符串动作: %s", action_value)
             return None
 
         # 处理选项选择动作
@@ -286,7 +292,7 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         if action_type == "dir_start":
             path = action_value.get("path", "")
             session_name = action_value.get("session_name", "")
-            cli_command = action_value.get("cli_command", "claude")  # 新增：获取 cli_command
+            cli_command = action_value.get("cli_command", "claude")
             print(f"[Lark] dir_start: path={path}, session={session_name}, cli_command={cli_command}")
             asyncio.create_task(handler._cmd_start(user_id, chat_id, f"{session_name} {path}", cli_command=cli_command))
             return None
@@ -320,7 +326,7 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
             asyncio.create_task(handler._cmd_ls(user_id, chat_id, "", tree=True, message_id=message_id))
             return None
 
-        # 流式卡片：快捷连接已存在会话
+        # 流式卡片：连接到已存在会话
         if action_type == "stream_attach_existing":
             session_name = action_value.get("session", "")
             print(f"[Lark] stream_attach_existing: session={session_name}")

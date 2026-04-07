@@ -1,5 +1,6 @@
 import logging
 import json
+import io
 from types import SimpleNamespace
 
 import remote_claude
@@ -22,10 +23,10 @@ def _build_args(**overrides):
     return SimpleNamespace(**data)
 
 
-def _mock_settings():
+def _mock_settings(launchers=None):
     """返回包含默认 Launcher 的 Settings"""
     return Settings(
-        launchers=[Launcher(name="Claude", cli_type="claude", command="claude")]
+        launchers=launchers or [Launcher(name="Claude", cli_type="claude", command="claude")]
     )
 
 
@@ -186,13 +187,13 @@ def test_cmd_start_accepts_monkeypatched_user_data_dir_path(monkeypatch, tmp_pat
     assert remote_claude._get_user_data_dir() == tmp_path
 
 
-def test_cmd_start_fails_fast_on_hard_startup_error_log(monkeypatch, tmp_path, capsys):
+
+
+def test_cmd_start_logs_codex_launcher_metadata(monkeypatch, tmp_path, capsys):
     env_snapshot_file = tmp_path / "env.json"
-    startup_log = tmp_path / "startup.log"
-    startup_log.write_text(
-        "2099-04-01 12:00:00.000 [Start] INFO launcher failed: command not found\n",
-        encoding="utf-8",
-    )
+    env_snapshot_file.write_text(json.dumps({}), encoding="utf-8")
+    socket_path = tmp_path / "codex.sock"
+    socket_path.write_text("ready", encoding="utf-8")
 
     class _DummyConfig:
         pass
@@ -206,25 +207,78 @@ def test_cmd_start_fails_fast_on_hard_startup_error_log(monkeypatch, tmp_path, c
 
     _tmux_session_exists.calls = 0
 
+    spawned = []
     monkeypatch.setattr(remote_claude, "tmux_session_exists", _tmux_session_exists)
     monkeypatch.setattr(remote_claude, "ensure_socket_dir", lambda: None)
     monkeypatch.setattr(remote_claude, "ensure_user_data_dir", lambda: None)
     monkeypatch.setattr(remote_claude, "get_env_snapshot_path", lambda _s: env_snapshot_file)
-    monkeypatch.setattr(remote_claude, "tmux_create_session", lambda *_a, **_kw: True)
-    monkeypatch.setattr(remote_claude, "get_socket_path", lambda _s: tmp_path / "missing.sock")
+    monkeypatch.setattr(remote_claude, "get_socket_path", lambda _s: socket_path)
+    monkeypatch.setattr(remote_claude, "tmux_create_session", lambda _s, command, detached=True: spawned.append((command, detached)) or True)
     monkeypatch.setattr(remote_claude, "tmux_kill_session", lambda _s: None)
-    monkeypatch.setattr(remote_claude, "time", type("T", (), {"sleep": staticmethod(lambda _x: None)})())
+
+    start_logger = logging.getLogger("Start")
+    original_handlers = list(start_logger.handlers)
+    original_level = start_logger.level
+    original_propagate = start_logger.propagate
+    for handler in list(start_logger.handlers):
+        start_logger.removeHandler(handler)
+
+    capture_stream = io.StringIO()
+    capture_handler = logging.StreamHandler(capture_stream)
+    capture_handler.setFormatter(logging.Formatter(
+        "%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    start_logger.addHandler(capture_handler)
+    start_logger.setLevel(logging.INFO)
+    start_logger.propagate = False
 
     import utils.runtime_config as runtime_config_module
     import utils.session as session_module
+    import client as client_module
 
     monkeypatch.setattr(runtime_config_module, "load_state", lambda: _DummyConfig())
-    monkeypatch.setattr(runtime_config_module, "load_settings", _mock_settings)
+    monkeypatch.setattr(
+        runtime_config_module,
+        "load_settings",
+        lambda: _mock_settings([Launcher(name="Codex", cli_type="codex", command="codex")]),
+    )
     monkeypatch.setattr(session_module, "resolve_session_name", lambda original, _cfg: original)
+    monkeypatch.setattr(client_module, "run_client", lambda _s: 0)
 
-    rc = remote_claude.cmd_start(_build_args(name="hard-fail-session", remote=False, remote_host="127.0.0.1", remote_port=8765, cli_args=[]))
+    rc = remote_claude.cmd_start(
+        _build_args(
+            name="codex-session",
+            launcher="Codex",
+            remote=False,
+            remote_host="127.0.0.1",
+            remote_port=8765,
+            cli_args=[],
+        )
+    )
 
     captured = capsys.readouterr()
-    assert rc == 1
-    assert "错误: Server 启动失败" in captured.out
-    assert "command not found" in captured.out
+    try:
+        assert rc == 0
+        assert "会话已启动: rc-codex-session" in captured.out
+        assert spawned
+        assert "--cli-type codex" in spawned[0][0]
+
+        text = capture_stream.getvalue()
+        assert "cli_type=codex" in text
+        assert "launcher=Codex" in text
+    finally:
+        start_logger.removeHandler(capture_handler)
+        capture_handler.close()
+        for handler in list(start_logger.handlers):
+            if handler not in original_handlers:
+                start_logger.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+        for handler in original_handlers:
+            if handler not in start_logger.handlers:
+                start_logger.addHandler(handler)
+        start_logger.setLevel(original_level)
+        start_logger.propagate = original_propagate
