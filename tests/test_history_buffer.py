@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HistoryBuffer 单元测试
+HistoryBuffer / 终端历史保留相关单元测试
 
 测试覆盖：
 1. 基本写入和读取
@@ -8,11 +8,14 @@ HistoryBuffer 单元测试
 3. 边界条件（空数据、超大数据、精确满）
 4. clear 方法
 5. len 方法
+6. OutputWatcher 默认历史保留上限
 """
 
 import pytest
 import sys
 import os
+import asyncio
+from unittest.mock import MagicMock, patch
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -168,6 +171,53 @@ class TestHistoryBuffer:
         buf.append(data)
         assert len(buf) == 10
         assert buf.get_all() == b"A" * 10
+
+
+class TestOutputWatcherHistoryLimits:
+    def test_output_watcher_uses_bounded_terminal_history(self):
+        from server.server import OutputWatcher
+
+        watcher = OutputWatcher("session-test", cols=80, rows=24, parser=MagicMock())
+
+        assert watcher._renderer.screen.history.size == watcher.TERMINAL_HISTORY_LIMIT
+
+    def test_output_watcher_memory_stats_reports_history_and_window_sizes(self):
+        from server.server import OutputWatcher
+
+        watcher = OutputWatcher("session-test", cols=80, rows=24, parser=MagicMock())
+        watcher._frame_window.extend([object(), object(), object()])
+
+        stats = watcher.get_memory_stats()
+
+        assert stats["terminal_history_size"] == watcher._renderer.screen.history.size
+        assert stats["frame_window_size"] == 3
+        assert stats["terminal_history_limit"] == watcher.TERMINAL_HISTORY_LIMIT
+
+    def test_output_watcher_log_memory_stats_includes_prefix_and_values(self):
+        from server.server import OutputWatcher
+
+        watcher = OutputWatcher("session-test", cols=80, rows=24, parser=MagicMock())
+
+        with patch("server.server.logger.info") as mock_info:
+            watcher.log_memory_stats()
+
+        fmt = mock_info.call_args.args[0]
+        values = mock_info.call_args.args[1:]
+        assert "[memory]" in fmt
+        assert values[1] == watcher.TERMINAL_HISTORY_LIMIT
+
+    def test_output_watcher_feed_logs_memory_stats_every_300_flushes(self):
+        from server.server import OutputWatcher
+
+        watcher = OutputWatcher("session-test", cols=80, rows=24, parser=MagicMock())
+        watcher._flush_count = 299
+
+        async def _run():
+            with patch.object(watcher, "log_memory_stats") as mock_log:
+                await watcher._flush()
+            mock_log.assert_called_once()
+
+        asyncio.run(_run())
 
 
 if __name__ == "__main__":

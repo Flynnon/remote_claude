@@ -100,15 +100,50 @@ class SharedMemoryPoller:
     每秒读取 .mq 文件中的 blocks 流，通过 hash diff 触发飞书卡片创建/更新。
     """
 
+    CARD_METADATA_LIMIT = 5
+
     def __init__(self, card_service: Any):
         self._card_service = card_service
         self._trackers: Dict[str, StreamTracker] = {}  # chat_id → StreamTracker
         self._tasks: Dict[str, asyncio.Task] = {}       # chat_id → Task
         self._kick_events: Dict[str, asyncio.Event] = {}  # chat_id → Event（唤醒轮询）
         self._rapid_until: Dict[str, float] = {}           # chat_id → 快速模式截止时间
+        self._memory_log_counter = 0
 
     def _get_settings(self):
         return load_settings()
+
+    def _prune_cards(self, tracker: StreamTracker) -> None:
+        if len(tracker.cards) <= self.CARD_METADATA_LIMIT:
+            return
+
+        active_card = tracker.cards[-1] if tracker.cards else None
+        frozen_cards = tracker.cards[:-1] if active_card else tracker.cards
+        keep_frozen = max(0, self.CARD_METADATA_LIMIT - (1 if active_card else 0))
+        tracker.cards = frozen_cards[-keep_frozen:] + ([active_card] if active_card else [])
+
+    def get_memory_stats(self) -> dict:
+        card_counts = [len(tracker.cards) for tracker in self._trackers.values()]
+        return {
+            "tracker_count": len(self._trackers),
+            "total_card_count": sum(card_counts),
+            "max_cards_per_tracker": max(card_counts, default=0),
+            "task_count": len(self._tasks),
+            "kick_event_count": len(self._kick_events),
+            "rapid_mode_count": len(self._rapid_until),
+        }
+
+    def log_memory_stats(self) -> None:
+        stats = self.get_memory_stats()
+        logger.info(
+            "[memory] tracker_count=%s total_card_count=%s max_cards_per_tracker=%s task_count=%s kick_event_count=%s rapid_mode_count=%s",
+            stats["tracker_count"],
+            stats["total_card_count"],
+            stats["max_cards_per_tracker"],
+            stats["task_count"],
+            stats["kick_event_count"],
+            stats["rapid_mode_count"],
+        )
 
     def start(self, chat_id: str, session_name: str, is_group: bool = False,
               notify_user_id: Optional[str] = None) -> None:
@@ -225,6 +260,9 @@ class SharedMemoryPoller:
                 if not tracker:
                     break
                 await self._poll_once(tracker)
+                self._memory_log_counter += 1
+                if self._memory_log_counter % 300 == 0:
+                    self.log_memory_stats()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -468,6 +506,7 @@ class SharedMemoryPoller:
         if card_id:
             await self._card_service.send_card(tracker.chat_id, card_id)
             tracker.cards.append(CardSlice(card_id=card_id, start_idx=start_idx))
+            self._prune_cards(tracker)
             tracker.content_hash = self._compute_hash(blocks_slice, status_line, bottom_bar, agent_panel, option_block)
             _safe_track_stats('card', 'create', session_name=tracker.session_name,
                               chat_id=tracker.chat_id)
@@ -518,6 +557,7 @@ class SharedMemoryPoller:
         if new_card_id:
             await self._card_service.send_card(tracker.chat_id, new_card_id)
             tracker.cards.append(CardSlice(card_id=new_card_id, start_idx=new_start))
+            self._prune_cards(tracker)
             tracker.content_hash = self._compute_hash(new_blocks, status_line, bottom_bar, agent_panel, option_block)
             _safe_track_stats('card', 'create', session_name=tracker.session_name,
                               chat_id=tracker.chat_id)
@@ -597,6 +637,7 @@ class SharedMemoryPoller:
         if new_card_id:
             await self._card_service.send_card(tracker.chat_id, new_card_id)
             tracker.cards.append(CardSlice(card_id=new_card_id, start_idx=new_start))
+            self._prune_cards(tracker)
             tracker.content_hash = self._compute_hash(new_blocks, status_line, bottom_bar, agent_panel, option_block)
             logger.info(
                 f"[NEW after FREEZE] session={tracker.session_name} start_idx={new_start} "

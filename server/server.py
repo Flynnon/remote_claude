@@ -213,6 +213,7 @@ class OutputWatcher:
     """
 
     WINDOW_SECONDS = 1.0
+    TERMINAL_HISTORY_LIMIT = 800
 
     def __init__(self, session_name: str, cols: int, rows: int,
                  parser=None,
@@ -239,7 +240,12 @@ class OutputWatcher:
                 logger.warning(f"无法创建 PTY 原始日志文件: {e}")
         # 持久化 pyte 渲染器：PTY 数据直接实时喂入，flush 时直接读 screen
         from rich_text_renderer import RichTextRenderer
-        self._renderer = RichTextRenderer(columns=cols, lines=rows, debug_stream=debug_screen)
+        self._renderer = RichTextRenderer(
+            columns=cols,
+            lines=rows,
+            history_limit=self.TERMINAL_HISTORY_LIMIT,
+            debug_stream=debug_screen,
+        )
         # 持久化解析器（跨帧保留 dot_row_cache）；由调用方注入（可插拔架构）
         import logging as _logging
         _logging.getLogger('ComponentParser').setLevel(_logging.DEBUG)
@@ -258,6 +264,7 @@ class OutputWatcher:
         self.last_window: Optional[ClaudeWindow] = None
         # PTY 静止后延迟重刷：消除窗口平滑的延迟效应
         self._reflush_handle: Optional[asyncio.TimerHandle] = None
+        self._flush_count = 0
         # 调试日志截断长度（可通过 ~/.remote-claude/.debug_config 配置）
         self._debug_truncate_len = 80
         try:
@@ -276,7 +283,24 @@ class OutputWatcher:
         self._cols = cols
         self._rows = rows
         from rich_text_renderer import RichTextRenderer
-        self._renderer = RichTextRenderer(columns=cols, lines=rows)
+        self._renderer = RichTextRenderer(columns=cols, lines=rows, history_limit=self.TERMINAL_HISTORY_LIMIT)
+
+    def get_memory_stats(self) -> dict:
+        return {
+            "terminal_history_size": self._renderer.screen.history.size,
+            "terminal_history_limit": self.TERMINAL_HISTORY_LIMIT,
+            "frame_window_size": len(self._frame_window),
+        }
+
+    def log_memory_stats(self) -> None:
+        stats = self.get_memory_stats()
+        logger.info(
+            "[memory] session=%s terminal_history_size=%s terminal_history_limit=%s frame_window_size=%s",
+            self._session_name,
+            stats["terminal_history_size"],
+            stats["terminal_history_limit"],
+            stats["frame_window_size"],
+        )
 
     def feed(self, data: bytes):
         self._renderer.feed(data)  # 直接喂持久化 screen，不再缓存原始字节
@@ -323,6 +347,9 @@ class OutputWatcher:
 
     async def _flush(self):
         self._pending = False
+        self._flush_count += 1
+        if self._flush_count % 300 == 0:
+            self.log_memory_stats()
         # 诊断日志：记录 flush 触发时间和帧窗口大小
         logger.debug(f"[diag-flush] ts={time.time():.6f} window_size={len(self._frame_window)}")
         try:

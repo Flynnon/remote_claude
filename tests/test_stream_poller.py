@@ -1311,6 +1311,92 @@ class TestPollerStartStop(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_cards_history_is_bounded_after_many_splits(self):
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        for i in range(20):
+            tracker.cards.append(CardSlice(card_id=f"card_{i}", start_idx=i * 10, frozen=True))
+        tracker.cards.append(CardSlice(card_id="card_active", start_idx=200, frozen=False))
+
+        poller = SharedMemoryPoller(MagicMock())
+        poller._prune_cards(tracker)
+
+        self.assertLessEqual(len(tracker.cards), 5)
+        self.assertEqual(tracker.cards[-1].card_id, "card_active")
+        self.assertFalse(tracker.cards[-1].frozen)
+        self.assertEqual([card.card_id for card in tracker.cards[:-1]], [
+            "card_16", "card_17", "card_18", "card_19"
+        ])
+
+    def test_cards_history_keeps_all_when_within_limit(self):
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.cards = [
+            CardSlice(card_id="card_1", start_idx=0, frozen=True),
+            CardSlice(card_id="card_2", start_idx=10, frozen=True),
+            CardSlice(card_id="card_3", start_idx=20, frozen=False),
+        ]
+
+        poller = SharedMemoryPoller(MagicMock())
+        poller._prune_cards(tracker)
+
+        self.assertEqual([card.card_id for card in tracker.cards], ["card_1", "card_2", "card_3"])
+
+    def test_memory_stats_reports_tracker_and_card_counts(self):
+        poller = SharedMemoryPoller(MagicMock())
+        tracker1 = StreamTracker(chat_id="c1", session_name="s1")
+        tracker1.cards = [CardSlice(card_id="card_1"), CardSlice(card_id="card_2")]
+        tracker2 = StreamTracker(chat_id="c2", session_name="s2")
+        tracker2.cards = [CardSlice(card_id="card_3")]
+        poller._trackers = {"c1": tracker1, "c2": tracker2}
+        poller._tasks = {"c1": MagicMock(), "c2": MagicMock()}
+        poller._kick_events = {"c1": MagicMock()}
+        poller._rapid_until = {"c1": 1.0, "c2": 2.0}
+
+        stats = poller.get_memory_stats()
+
+        self.assertEqual(stats["tracker_count"], 2)
+        self.assertEqual(stats["total_card_count"], 3)
+        self.assertEqual(stats["max_cards_per_tracker"], 2)
+        self.assertEqual(stats["task_count"], 2)
+        self.assertEqual(stats["kick_event_count"], 1)
+        self.assertEqual(stats["rapid_mode_count"], 2)
+
+    def test_log_memory_stats_includes_prefix_and_counts(self):
+        poller = SharedMemoryPoller(MagicMock())
+        tracker = StreamTracker(chat_id="c1", session_name="s1")
+        tracker.cards = [CardSlice(card_id="card_1")]
+        poller._trackers = {"c1": tracker}
+
+        with patch("lark_client.shared_memory_poller.logger.info") as mock_info:
+            poller.log_memory_stats()
+
+        fmt = mock_info.call_args.args[0]
+        values = mock_info.call_args.args[1:]
+        self.assertIn("[memory]", fmt)
+        self.assertEqual(values[0], 1)
+        self.assertEqual(values[1], 1)
+
+    def test_poll_loop_logs_memory_stats_every_300_iterations(self):
+        async def _run():
+            poller = SharedMemoryPoller(MagicMock())
+            tracker = StreamTracker(chat_id="c1", session_name="s1")
+            poller._trackers = {"c1": tracker}
+            poller._tasks = {"c1": MagicMock()}
+            poller._kick_events = {}
+            poller._rapid_until = {}
+            poller._memory_log_counter = 299
+
+            async def fake_poll_once(_tracker):
+                poller._trackers.pop("c1", None)
+
+            poller._poll_once = AsyncMock(side_effect=fake_poll_once)
+
+            with patch.object(poller, "log_memory_stats") as mock_log:
+                await poller._poll_loop("c1")
+
+            mock_log.assert_called_once()
+
+        asyncio.run(_run())
+
 
 class TestSharedMemoryPollerAutoAnswerCancellation(unittest.TestCase):
     def test_cancel_auto_answer_cancels_matching_session_task(self):
