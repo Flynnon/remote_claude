@@ -28,12 +28,32 @@ trap 'handle_interrupt' INT TERM
 
 # 结果目录
 RESULTS_DIR="/home/testuser/test-results"
+PACKAGES_DIR="$RESULTS_DIR/packages"
+DIAGNOSTICS_DIR="$RESULTS_DIR/diagnostics"
 INSTALL_DIR="/home/testuser/test-npm-install"
-mkdir -p "$RESULTS_DIR"
+mkdir -p "$RESULTS_DIR" "$PACKAGES_DIR" "$DIAGNOSTICS_DIR"
 
 # 日志函数
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_log_file() {
+    local log_file="$1"
+    [ -f "$log_file" ] || return 0
+    log_info "=== $(basename "$log_file") ==="
+    cat "$log_file"
+}
+
+capture_command_output() {
+    local output_file="$1"
+    shift
+
+    set +e
+    "$@" > "$output_file" 2>&1
+    local rc=$?
+    set -e
+    return $rc
 }
 
 check_command() {
@@ -99,28 +119,37 @@ cleanup_session() {
 print_session_diagnostics() {
     local session="$1"
     local log_file="$2"
+    local diag_prefix="$DIAGNOSTICS_DIR/${session}"
+    local server_log="$HOME/.remote-claude/startup.log"
+    local tmux_name="rc-${session}"
 
     if [[ -n "$log_file" && -f "$log_file" ]]; then
-        log_info "=== $(basename "$log_file") ==="
-        cat "$log_file"
+        cp "$log_file" "${diag_prefix}_start.log"
+        print_log_file "$log_file"
     fi
 
-    local server_log="$HOME/.remote-claude/startup.log"
     if [[ -f "$server_log" ]]; then
-        log_info "=== startup.log（最后 30 行）==="
-        tail -30 "$server_log"
+        tail -30 "$server_log" > "${diag_prefix}_startup_tail.log"
+        print_log_file "${diag_prefix}_startup_tail.log"
     fi
 
-    log_info "=== tmux 会话状态 ==="
-    tmux list-sessions 2>&1 || echo "没有活跃的 tmux 会话"
+    if capture_command_output "${diag_prefix}_tmux_sessions.log" tmux list-sessions; then
+        print_log_file "${diag_prefix}_tmux_sessions.log"
+    else
+        printf '%s\n' "没有活跃的 tmux 会话" > "${diag_prefix}_tmux_sessions.log"
+        print_log_file "${diag_prefix}_tmux_sessions.log"
+    fi
 
-    log_info "=== socket 目录状态 ==="
-    ls -la /tmp/remote-claude/ 2>&1 || echo "socket 目录不存在"
+    if [ -d /tmp/remote-claude/ ]; then
+        capture_command_output "${diag_prefix}_socket_dir.log" ls -la /tmp/remote-claude/
+    else
+        printf '%s\n' "socket 目录不存在" > "${diag_prefix}_socket_dir.log"
+    fi
+    print_log_file "${diag_prefix}_socket_dir.log"
 
-    local tmux_name="rc-${session}"
     if tmux has-session -t "$tmux_name" 2>/dev/null; then
-        log_info "=== tmux 会话 $tmux_name 输出 ==="
-        tmux capture-pane -t "$tmux_name" -p 2>&1 || echo "无法捕获输出"
+        capture_command_output "${diag_prefix}_tmux_pane.log" tmux capture-pane -t "$tmux_name" -p
+        print_log_file "${diag_prefix}_tmux_pane.log"
     fi
 }
 
@@ -204,10 +233,12 @@ pack_npm_package() {
         log_success "npm 包打包成功: $PACK_FILE"
         log_info "版本: $VERSION"
         echo "$VERSION" > "$RESULTS_DIR/version.txt"
-        mv "$PACK_FILE" /tmp/
+        cp "$PACK_FILE" "$PACKAGES_DIR/$PACK_FILE"
+        echo "$PACKAGES_DIR/$PACK_FILE" > "$RESULTS_DIR/pack_file_path.txt"
+        log_success "npm 打包产物已保留: $PACKAGES_DIR/$PACK_FILE"
     else
         log_error "npm pack 失败"
-        cat "$RESULTS_DIR/pack.log"
+        print_log_file "$RESULTS_DIR/pack.log"
         return 1
     fi
 }
@@ -230,7 +261,7 @@ simulate_install() {
         log_success "npm install 成功"
     else
         log_error "npm install 失败"
-        cat "$RESULTS_DIR/npm_install.log"
+        print_log_file "$RESULTS_DIR/npm_install.log"
         return 1
     fi
 
@@ -396,9 +427,43 @@ check_file_integrity() {
     fi
 }
 
-# 步骤 8：生成测试报告
+check_canonical_paths() {
+    print_header "步骤 8：路径规范检查"
+
+    local install_dir="$1"
+    cd "$install_dir/node_modules/remote-claude"
+
+    local path_log="$RESULTS_DIR/path_checks.log"
+    : > "$path_log"
+
+    if grep -q 'SCRIPT_DIR="$(cd "$PROJECT_DIR/scripts" 2>/dev/null && pwd)"' scripts/_common.sh && \
+       grep -q 'PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"' scripts/_common.sh && \
+       grep -q 'REMOTE_CLAUDE_HOME_DIR="$(cd "$HOME" 2>/dev/null && pwd)/.remote-claude"' scripts/_common.sh; then
+        log_success "_common.sh 使用规范化绝对路径"
+        printf 'PASS: canonical absolute paths in scripts/_common.sh\n' >> "$path_log"
+    else
+        log_error "_common.sh 缺少规范化绝对路径处理"
+        printf 'FAIL: canonical absolute paths missing in scripts/_common.sh\n' >> "$path_log"
+        print_log_file "$path_log"
+        return 1
+    fi
+
+    if grep -q '\$REMOTE_CLAUDE_ENV_FILE' scripts/check-env.sh && \
+       grep -q '\$REMOTE_CLAUDE_SETTINGS_FILE' scripts/setup.sh && \
+       grep -q '\$REMOTE_CLAUDE_STATE_FILE' scripts/setup.sh; then
+        log_success "配置写入场景复用绝对路径变量"
+        printf 'PASS: runtime config writes use centralized absolute path variables\n' >> "$path_log"
+    else
+        log_error "配置写入场景未统一使用绝对路径变量"
+        printf 'FAIL: runtime config writes are not centralized\n' >> "$path_log"
+        print_log_file "$path_log"
+        return 1
+    fi
+}
+
+# 步骤 10：生成测试报告
 generate_report() {
-    print_header "步骤 8：生成测试报告"
+    print_header "步骤 10：生成测试报告"
 
     local report_file="$RESULTS_DIR/test_report.md"
     local overall_result="✅ 通过"
@@ -435,12 +500,16 @@ $TEST_REPORT
 
 ## 测试日志
 
-- npm 打包: \`pack.log\`
-- npm 安装: \`npm_install.log\`
+- npm 打包: \`$RESULTS_DIR/pack.log\`
+- npm 安装: \`$RESULTS_DIR/npm_install.log\`
+- 卸载验证: \`$RESULTS_DIR/uninstall.log\`
+- 路径检查: \`$RESULTS_DIR/path_checks.log\`
+- 打包产物: \`$(cat "$RESULTS_DIR/pack_file_path.txt" 2>/dev/null || echo "$PACKAGES_DIR")\`
+- 诊断目录: \`$DIAGNOSTICS_DIR\`
 
 ## 诊断信息
 
-如测试失败，请运行 \`docker/scripts/docker-diagnose.sh\` 收集诊断信息。
+如测试失败，请优先查看 \`$DIAGNOSTICS_DIR\` 下对应会话日志；必要时再运行 \`docker/scripts/docker-diagnose.sh\` 收集补充诊断信息。
 
 ---
 
@@ -462,14 +531,14 @@ verify_uninstall_hook() {
         log_success "uninstall hook 非交互执行成功"
     else
         log_error "uninstall hook 执行失败"
-        cat "$RESULTS_DIR/uninstall.log"
+        print_log_file "$RESULTS_DIR/uninstall.log"
         return 1
     fi
 }
 
-# 步骤 10：清理
+# 步骤 11：清理
 cleanup() {
-    print_header "步骤 10：清理"
+    print_header "步骤 11：清理"
 
     log_info "清理完成，容器将正常退出"
 }
@@ -510,8 +579,8 @@ main() {
     fi
 
     # 步骤 3：模拟用户安装
-    PACK_FILE_PATH=$(ls /tmp/remote-claude-*.tgz 2>/dev/null | head -1)
-    if [ -z "$PACK_FILE_PATH" ]; then
+    PACK_FILE_PATH=$(cat "$RESULTS_DIR/pack_file_path.txt" 2>/dev/null || true)
+    if [ -z "$PACK_FILE_PATH" ] || [ ! -f "$PACK_FILE_PATH" ]; then
         log_error "找不到打包好的 .tgz 文件"
         exit 1
     fi
@@ -544,19 +613,25 @@ main() {
         mark_critical_step_failed
     fi
 
+    # 步骤 8：路径规范检查
+    if ! check_canonical_paths "$INSTALL_DIR"; then
+        log_error "路径规范检查失败，继续执行..."
+        mark_critical_step_failed
+    fi
+
     # 步骤 9：验证卸载钩子
     if ! verify_uninstall_hook "$INSTALL_DIR"; then
         log_error "卸载钩子验证失败，继续执行..."
         mark_critical_step_failed
     fi
 
-    # 步骤 8：生成测试报告
+    # 步骤 10：生成测试报告
     generate_report
 
     # 输出最终结果
     print_results
 
-    # 步骤 10：清理
+    # 步骤 11：清理
     cleanup
 
     if [ $CRITICAL_STEP_FAILED -ne 0 ]; then

@@ -1,7 +1,7 @@
 [project]
 name = "remote-claude"
 version = "1.0.5"
-description = "双端共享 Claude CLI 工具"
+description = "双端共享 Claude/Codex CLI 工具"
 requires-python = ">=3.11"
 dependencies = [
     "lark-oapi==1.5.3",

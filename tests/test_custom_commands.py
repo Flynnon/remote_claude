@@ -273,6 +273,13 @@ def test_completion_script_advertises_current_public_management_commands():
     assert 'connection token regenerate-token connect remote uninstall' in content
 
 
+def test_shell_entry_help_shortcuts_match_current_management_surface():
+    content = (REPO_ROOT / "bin" / "remote-claude").read_text(encoding="utf-8")
+
+    assert "config|connection|conn|connect|remote|token|regenerate-token|lark|uninstall)" in content
+    assert "stats|update" not in content
+
+
 def test_completion_extracts_session_names_from_list_output():
     result = subprocess.run(
         ["bash"],

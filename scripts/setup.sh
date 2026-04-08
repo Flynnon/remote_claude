@@ -43,9 +43,12 @@ print_warnings() {
 
 # 构建完整 shell 初始化块（仅暴露公开 shell launcher 入口，不暴露项目 .venv 运行时）
 _build_shell_init_block() {
+    completion_script="$PROJECT_DIR/scripts/completion.sh"
     # 用户 PATH 只收口到 ~/.local/bin；公开入口由该目录中的 shell launcher 提供。
     # 项目内 .venv 仅供 launcher/脚本内部调用，绝不写入用户 shell PATH。
-    printf '%s' "export PATH=\"\$HOME/.local/bin:\$PATH\"; . \"$PROJECT_DIR/scripts/completion.sh\""
+    printf '%s\n%s\n' \
+        'export PATH="$HOME/.local/bin:$PATH"' \
+        ". \"$completion_script\""
 }
 
 # 确保 shell 初始化块始终写入完整数据

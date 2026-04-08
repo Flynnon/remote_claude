@@ -15,14 +15,6 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 STARTUP_DIR="${STARTUP_DIR:-$(pwd)}"
 
-_use_here_mode=0
-case "${1:-}" in
-    -.|--here)
-        _use_here_mode=1
-        shift
-        ;;
-esac
-
 # -h/--help 与纯管理帮助应在 shell 层短路，避免触发 _common.sh 的 lazy init
 case "${1:-}" in
     -h|--help)
@@ -72,6 +64,53 @@ esac
 _init_startup_dir
 _require_startup_dir || exit 1
 
+if [ "$1" = "start" ]; then
+    shift
+    _rc_original_start_args="$@"
+    set --
+    _rc_has_here=0
+    _rc_has_name=0
+    _rc_seen_double_dash=0
+
+    for _rc_arg in $_rc_original_start_args; do
+        if [ "$_rc_seen_double_dash" = "1" ]; then
+            set -- "$@" "$_rc_arg"
+            continue
+        fi
+
+        case "$_rc_arg" in
+            --)
+                _rc_seen_double_dash=1
+                set -- "$@" --
+                ;;
+            --here|-.)
+                if [ "$#" -gt 0 ] && [ "$1" != "--" ] && [ "$_rc_has_name" = "1" ]; then
+                    print_error "--here 不能与显式会话名同时使用"
+                    exit 1
+                fi
+                _rc_has_here=1
+                ;;
+            -*)
+                set -- "$@" "$_rc_arg"
+                ;;
+            *)
+                if [ "$_rc_has_here" = "1" ]; then
+                    print_error "--here 不能与显式会话名同时使用"
+                    exit 1
+                fi
+                _rc_has_name=1
+                set -- "$@" "$_rc_arg"
+                ;;
+        esac
+    done
+
+    if [ "$_rc_has_here" = "1" ]; then
+        set -- start "$(basename "$STARTUP_DIR")" "$@"
+    else
+        set -- start "$@"
+    fi
+fi
+
 # log 子命令：查看最后启动的 session 日志
 if [ "$1" = "log" ]; then
     LOG_DIR="/tmp/remote-claude"
@@ -111,11 +150,6 @@ fi
 # lark 子命令：仅在真实执行管理动作时检查 .env，help 不应触发交互配置
 if [ "$1" = "lark" ] && [ "${2:-}" != "--help" ] && [ "${2:-}" != "-h" ]; then
     sh "${PROJECT_DIR}/scripts/check-env.sh"
-fi
-
-if [ "$_use_here_mode" = "1" ]; then
-    _session_name="$(basename "$STARTUP_DIR")"
-    set -- start "$_session_name" "$@"
 fi
 
 # 在启动目录执行入口点，保持调用方 cwd

@@ -1,7 +1,7 @@
 {
   "name": "remote-claude",
   "version": "1.0.5",
-  "description": "双端共享 Claude CLI 工具",
+  "description": "双端共享 Claude/Codex CLI 工具",
   "bin": {
     "remote-claude": "bin/remote-claude",
     "cla": "bin/cla",

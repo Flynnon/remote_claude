@@ -88,15 +88,24 @@ _install_fail_hint() {
 
 # 统一 PROJECT_DIR / SCRIPT_DIR（兼容历史入口）
 # 约定：PROJECT_DIR 为项目根目录；SCRIPT_DIR 为 $PROJECT_DIR/scripts
+_canonicalize_existing_dir() {
+    if [ -n "$1" ] && [ -d "$1" ]; then
+        cd "$1" 2>/dev/null && pwd
+        return 0
+    fi
+    return 1
+}
+
 _normalize_project_and_script_dir() {
     if [ -n "${PROJECT_DIR:-}" ] && [ -d "$PROJECT_DIR" ]; then
         case "$PROJECT_DIR" in
             */scripts)
-                SCRIPT_DIR="$PROJECT_DIR"
+                SCRIPT_DIR="$(_canonicalize_existing_dir "$PROJECT_DIR")"
                 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
                 ;;
             *)
-                SCRIPT_DIR="$PROJECT_DIR/scripts"
+                PROJECT_DIR="$(_canonicalize_existing_dir "$PROJECT_DIR")"
+                SCRIPT_DIR="$(cd "$PROJECT_DIR/scripts" 2>/dev/null && pwd)"
                 ;;
         esac
         export PROJECT_DIR SCRIPT_DIR
@@ -106,11 +115,12 @@ _normalize_project_and_script_dir() {
     if [ -n "${SCRIPT_DIR:-}" ] && [ -d "$SCRIPT_DIR" ]; then
         case "$SCRIPT_DIR" in
             */scripts)
+                SCRIPT_DIR="$(_canonicalize_existing_dir "$SCRIPT_DIR")"
                 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
                 ;;
             *)
-                PROJECT_DIR="$SCRIPT_DIR"
-                SCRIPT_DIR="$PROJECT_DIR/scripts"
+                PROJECT_DIR="$(_canonicalize_existing_dir "$SCRIPT_DIR")"
+                SCRIPT_DIR="$(cd "$PROJECT_DIR/scripts" 2>/dev/null && pwd)"
                 ;;
         esac
         export PROJECT_DIR SCRIPT_DIR
@@ -126,9 +136,10 @@ _require_common_layout() {
         print_error "PROJECT_DIR 无效，无法继续"
         return 1
     fi
-    SCRIPT_DIR="$PROJECT_DIR/scripts"
-    if [ ! -d "$SCRIPT_DIR" ]; then
-        print_error "scripts 目录不存在: $SCRIPT_DIR"
+    PROJECT_DIR="$(_canonicalize_existing_dir "$PROJECT_DIR")"
+    SCRIPT_DIR="$(cd "$PROJECT_DIR/scripts" 2>/dev/null && pwd)"
+    if [ -z "$SCRIPT_DIR" ] || [ ! -d "$SCRIPT_DIR" ]; then
+        print_error "scripts 目录不存在: $PROJECT_DIR/scripts"
         return 1
     fi
     export PROJECT_DIR SCRIPT_DIR
@@ -139,7 +150,7 @@ _normalize_project_and_script_dir || :
 _require_common_layout || return 1
 
 rc_init_paths() {
-    REMOTE_CLAUDE_HOME_DIR="$HOME/.remote-claude"
+    REMOTE_CLAUDE_HOME_DIR="$(cd "$HOME" 2>/dev/null && pwd)/.remote-claude"
     REMOTE_CLAUDE_SOCKET_DIR="/tmp/remote-claude"
     REMOTE_CLAUDE_ENV_FILE="$REMOTE_CLAUDE_HOME_DIR/.env"
     REMOTE_CLAUDE_SETTINGS_FILE="$REMOTE_CLAUDE_HOME_DIR/settings.json"

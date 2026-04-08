@@ -239,6 +239,34 @@ SCRIPT_DIR='{script_dir}'
     return result
 
 
+def test_remote_claude_management_help_commands_skip_lazy_init(tmp_path: Path):
+    commands = [
+        ["config", "--help"],
+        ["connection", "--help"],
+        ["connect", "--help"],
+        ["remote", "--help"],
+        ["token", "--help"],
+        ["regenerate-token", "--help"],
+        ["uninstall", "--help"],
+    ]
+
+    command_path = REPO_ROOT / "bin" / "remote-claude"
+    for command in commands:
+        home_dir = tmp_path / "_".join(command).replace("-", "_")
+        (home_dir / ".remote-claude").mkdir(parents=True)
+        result = subprocess.run(
+            [str(command_path), *command],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(home_dir)},
+        )
+
+        assert result.returncode == 0, (command, result.stdout, result.stderr)
+        assert "检测到依赖变更，正在更新 Python 环境..." not in result.stdout
+        assert "飞书客户端尚未配置" not in result.stdout
+
+
 def test_lazy_init_if_needed_sync_outcomes(tmp_path: Path):
     success_command = '    if _lazy_init; then\n        status=$?\n        echo "rc:$status result:${LAZY_INIT_RESULT:-missing}"\n    else\n        status=$?\n        echo "rc:$status result:${LAZY_INIT_RESULT:-missing}"\n        exit 1\n    fi\n'
     failure_command = '    if _lazy_init; then\n        status=$?\n        echo "rc:$status result:${LAZY_INIT_RESULT:-missing}"\n        exit 1\n    else\n        status=$?\n        echo "rc:$status result:${LAZY_INIT_RESULT:-missing}"\n    fi\n'
@@ -323,7 +351,6 @@ def test_runtime_shell_scripts_do_not_repeat_centralized_paths():
         assert '"$HOME/.remote-claude"' not in content, rel
         assert '"/tmp/remote-claude"' not in content, rel
         assert "resources/defaults/" not in content, rel
-
 
 def test_test_lark_management_uses_common_runtime_variables():
     content = (REPO_ROOT / "scripts" / "test_lark_management.sh").read_text(encoding="utf-8")

@@ -62,38 +62,62 @@ def test_bin_remote_claude_help_exits_cleanly_without_spawning_session(tmp_path)
     assert "remote_claude.py" not in result.stdout
 
 
-def test_main_help_uses_current_public_start_surface_only(tmp_path):
-    home_dir = tmp_path / "main_help_current_public_start_surface"
-    (home_dir / ".remote-claude").mkdir(parents=True)
 
-    install_dir_file = REPO_ROOT / "test-results" / "install_dir.txt"
-    env = {**os.environ, "HOME": str(home_dir)}
-    command_path = REPO_ROOT / "bin" / "remote-claude"
-    if install_dir_file.exists():
-        install_dir = Path(install_dir_file.read_text(encoding="utf-8").strip())
-        candidate = install_dir / "node_modules" / "remote-claude"
-        if candidate.exists():
-            broken_python = candidate / ".venv" / "bin" / "python3"
-            if broken_python.exists() or broken_python.is_symlink():
-                broken_python.unlink()
-            command_path = candidate / "bin" / "remote-claude"
+
+def test_remote_claude_start_here_help_rewrites_to_plain_start_without_passing_here(tmp_path):
+    home_dir = tmp_path / "start_here_help_home"
+    startup_dir = tmp_path / "workspace" / "demo-project"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+    startup_dir.mkdir(parents=True)
 
     result = subprocess.run(
-        [str(command_path), "start", "demo", "--help"],
-        cwd=command_path.parent.parent,
+        [str(REPO_ROOT / "bin/remote-claude"), "start", "--here", "--help"],
+        cwd=startup_dir,
         capture_output=True,
         text=True,
-        env=env,
+        env={**os.environ, "HOME": str(home_dir)},
     )
 
     assert result.returncode == 0
-    assert "--launcher" in result.stdout
-    assert "--remote" in result.stdout
-    assert "--remote-host" in result.stdout
-    assert "--remote-port" in result.stdout
-    assert "--cli-command" not in result.stdout
-    assert "--cli-type" not in result.stdout
-    assert "--cli_type" not in result.stdout
+    assert "usage: remote-claude start" in result.stdout
+    assert "--here" not in result.stdout
+
+
+def test_remote_claude_top_level_here_is_treated_as_unknown_subcommand(tmp_path):
+    home_dir = tmp_path / "top_level_here_home"
+    startup_dir = tmp_path / "workspace" / "demo-project"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+    startup_dir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(REPO_ROOT / "bin/remote-claude"), "--here", "--help"],
+        cwd=startup_dir,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home_dir)},
+    )
+
+    assert result.returncode == 0
+    assert "--here" not in result.stdout
+    assert "{start,attach,list,kill,status" in result.stdout
+
+
+def test_remote_claude_start_here_conflicts_with_explicit_session_name(tmp_path):
+    home_dir = tmp_path / "start_here_conflict_home"
+    startup_dir = tmp_path / "workspace" / "demo-project"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+    startup_dir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(REPO_ROOT / "bin/remote-claude"), "start", "demo", "--here"],
+        cwd=startup_dir,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home_dir)},
+    )
+
+    assert result.returncode != 0
+    assert "--here 不能与显式会话名同时使用" in result.stdout
 
 
 def test_main_help_advertises_current_public_management_commands(tmp_path):
@@ -134,6 +158,24 @@ def test_main_help_advertises_current_public_management_commands(tmp_path):
     assert "remote-claude regenerate-token mywork" in result.stdout
     assert "remote-claude remote restart <host>" in result.stdout
     assert "uninstall        清理环境" in result.stdout
+
+
+def test_bin_remote_claude_supports_remote_token_and_regenerate_help_without_lazy_init_side_effects(tmp_path):
+    home_dir = tmp_path / "remote_management_help_home"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+
+    for command in (["remote", "--help"], ["token", "--help"], ["regenerate-token", "--help"]):
+        result = subprocess.run(
+            [str(REPO_ROOT / "bin/remote-claude"), *command],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(home_dir)},
+        )
+
+        assert result.returncode == 0, (command, result.stderr)
+        assert "请选择 Claude CLI 可执行文件" not in result.stdout
+        assert "飞书客户端尚未配置" not in result.stdout
 
 
 def test_cmd_remote_uses_current_remote_control_path(monkeypatch):
@@ -270,14 +312,17 @@ def test_feishu_client_doc_matches_current_lark_boundary_and_runtime_paths():
 def test_readme_and_cli_reference_cover_current_public_management_surface():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     cli_doc = (REPO_ROOT / "docs" / "cli-reference.md").read_text(encoding="utf-8")
+    remote_doc = (REPO_ROOT / "docs" / "remote-connection.md").read_text(encoding="utf-8")
 
-    for text in [
-        "remote-claude status <会话名>",
-        "remote-claude token <会话名>",
-        "remote-claude regenerate-token <会话名>",
-        "remote-claude uninstall",
-    ]:
-        assert text in readme or text in cli_doc
+    coverage_map = {
+        "remote-claude status <会话名>": {readme, cli_doc},
+        "remote-claude token <session>": {cli_doc, remote_doc},
+        "remote-claude regenerate-token <session>": {cli_doc, remote_doc},
+        "remote-claude uninstall": {cli_doc},
+    }
+
+    for text, sources in coverage_map.items():
+        assert any(text in source for source in sources)
 
 
 
