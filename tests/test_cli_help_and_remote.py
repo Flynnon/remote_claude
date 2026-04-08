@@ -201,6 +201,38 @@ def test_connection_shortcuts_fall_back_to_uv_when_system_python_too_old(tmp_pat
     assert "scripts/setup.sh --npm --lazy" not in result.stderr
 
 
+def test_config_command_help_uses_settings_and_state_wording(capsys):
+    result = remote_claude.cmd_config(SimpleNamespace())
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "--settings" in out
+    assert "--state" in out
+    assert "--config" not in out
+    assert "--runtime" not in out
+
+
+def test_parser_exposes_settings_and_state_reset_flags():
+    parser = remote_claude.argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    config_parser = subparsers.add_parser("config")
+    config_subparsers = config_parser.add_subparsers(dest="config_command")
+    config_reset_parser = config_subparsers.add_parser("reset")
+    config_reset_parser.add_argument("--all", action="store_true")
+    config_reset_parser.add_argument("--settings", dest="settings_only", action="store_true")
+    config_reset_parser.add_argument("--state", dest="state_only", action="store_true")
+
+    args = parser.parse_args(["config", "reset", "--settings"])
+    assert args.command == "config"
+    assert args.config_command == "reset"
+    assert args.settings_only is True
+    assert args.state_only is False
+
+    args = parser.parse_args(["config", "reset", "--state"])
+    assert args.settings_only is False
+    assert args.state_only is True
+
+
 def test_remote_list_does_not_require_session_name():
     from remote_claude import validate_remote_args
 
@@ -220,19 +252,17 @@ def test_cmd_list_remote_prints_single_session_status(monkeypatch, capsys):
         assert session_fallback == "list"
         return ("10.0.0.1", 10000, "demo", "secret-token")
 
-    def fake_print_remote_list_result(message):
-        print("远程会话:")
-        print("- demo (active=是, tmux=是)")
-
     calls = []
 
     def fake_run_remote_control(host, port, session, token, operation):
         calls.append((host, port, session, token, operation))
-        remote_claude._print_remote_list_result('{"sessions":[{"session":"demo","active":true,"tmux":true}]}')
+        remote_claude._print_remote_control_success(
+            "list",
+            '{"sessions":[{"session":"demo","active":true,"tmux":true}]}'
+        )
         return 0
 
     monkeypatch.setattr(remote_claude, "validate_remote_args", fake_validate_remote_args)
-    monkeypatch.setattr(remote_claude, "_print_remote_list_result", fake_print_remote_list_result)
     monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
 
     args = SimpleNamespace(remote=True, host="10.0.0.1", port=10000, token="secret-token", name="")
@@ -242,13 +272,14 @@ def test_cmd_list_remote_prints_single_session_status(monkeypatch, capsys):
     assert result == 0
     assert calls == [("10.0.0.1", 10000, "demo", "secret-token", "list")]
     out = capsys.readouterr().out
-    assert "远程会话:" in out
+    assert "活跃会话:" in out
+    assert "远程会话" not in out
     assert "demo" in out
     assert "active=是" in out
     assert "tmux=是" in out
 
 
-def test_cmd_remote_uses_validate_remote_args_and_run_remote_control(monkeypatch):
+def test_cmd_token_remote_uses_validate_remote_args_and_run_remote_control(monkeypatch):
     calls = []
 
     def fake_validate_remote_args(args, session_fallback=None):
@@ -272,6 +303,86 @@ def test_cmd_remote_uses_validate_remote_args_and_run_remote_control(monkeypatch
 
 
 
+def test_run_remote_control_formats_status_result(monkeypatch, capsys):
+    class FakeClient:
+        async def send_control(self, action):
+            assert action == "status"
+            return {
+                "success": True,
+                "message": '{"session":"demo","active":true,"tmux":false}',
+            }
+
+    monkeypatch.setattr(remote_claude, "_build_remote_client", lambda host, session, token, port: FakeClient())
+
+    result = remote_claude.run_remote_control("10.0.0.1", 10000, "demo", "secret", "status")
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "会话状态:" in out
+    assert "demo" in out
+    assert "active=是" in out
+    assert "tmux=否" in out
+
+
+
+def test_run_remote_control_formats_token_result(monkeypatch, capsys):
+    class FakeClient:
+        async def send_control(self, action):
+            assert action == "token"
+            return {
+                "success": True,
+                "message": '{"session":"demo","token":"secret-token-value"}',
+            }
+
+    monkeypatch.setattr(remote_claude, "_build_remote_client", lambda host, session, token, port: FakeClient())
+
+    result = remote_claude.run_remote_control("10.0.0.1", 10000, "demo", "secret", "token")
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "会话 Token:" in out
+    assert "- 会话: demo" in out
+    assert "- Token: secret-token-value" in out
+
+
+
+def test_run_remote_control_formats_regenerate_token_result(monkeypatch, capsys):
+    class FakeClient:
+        async def send_control(self, action):
+            assert action == "regenerate-token"
+            return {
+                "success": True,
+                "message": '{"session":"demo","token":"new-secret-token"}',
+            }
+
+    monkeypatch.setattr(remote_claude, "_build_remote_client", lambda host, session, token, port: FakeClient())
+
+    result = remote_claude.run_remote_control("10.0.0.1", 10000, "demo", "secret", "regenerate-token")
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "新会话 Token:" in out
+    assert "- 会话: demo" in out
+    assert "- Token: new-secret-token" in out
+
+
+
+def test_run_remote_control_preserves_raw_message_for_non_json_success(monkeypatch, capsys):
+    class FakeClient:
+        async def send_control(self, action):
+            assert action == "token"
+            return {
+                "success": True,
+                "message": "plain success message",
+            }
+
+    monkeypatch.setattr(remote_claude, "_build_remote_client", lambda host, session, token, port: FakeClient())
+
+    result = remote_claude.run_remote_control("10.0.0.1", 10000, "demo", "secret", "token")
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert out == "✓ plain success message\n"
 
 
 def test_cmd_token_local_prints_human_readable_token(monkeypatch, capsys):
@@ -292,8 +403,8 @@ def test_cmd_token_local_prints_human_readable_token(monkeypatch, capsys):
     assert result == 0
     out = capsys.readouterr().out
     assert "会话 Token:" in out
-    assert "demo" in out
-    assert "secret-token-value" in out
+    assert "- 会话: demo" in out
+    assert "- Token: secret-token-value" in out
 
 
 def test_cmd_regenerate_token_local_prints_human_readable_token(monkeypatch, capsys):
@@ -314,8 +425,55 @@ def test_cmd_regenerate_token_local_prints_human_readable_token(monkeypatch, cap
     assert result == 0
     out = capsys.readouterr().out
     assert "新会话 Token:" in out
-    assert "demo" in out
-    assert "new-secret-token" in out
+    assert "- 会话: demo" in out
+    assert "- Token: new-secret-token" in out
+
+
+def test_cmd_kill_local_prints_result_style_success_message(monkeypatch, capsys):
+    calls = []
+
+    class FakeManager:
+        def __init__(self, session_name):
+            self.session_name = session_name
+
+        def delete_token_file(self):
+            calls.append(("delete_token", self.session_name))
+
+    monkeypatch.setattr(remote_claude, "is_session_active", lambda session: session == "demo")
+    monkeypatch.setattr(remote_claude, "tmux_session_exists", lambda session: session == "demo")
+    monkeypatch.setattr(remote_claude, "tmux_kill_session", lambda session: calls.append(("tmux_kill", session)))
+    monkeypatch.setattr(remote_claude, "cleanup_session", lambda session: calls.append(("cleanup", session)))
+
+    real_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "server.token_manager":
+            return SimpleNamespace(TokenManager=FakeManager)
+        if name == "utils.runtime_config":
+            return SimpleNamespace(remove_session_mapping=lambda session: calls.append(("remove_mapping", session)))
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    args = SimpleNamespace(remote=False, name="demo")
+
+    result = remote_claude.cmd_kill(args)
+
+    assert result == 0
+    assert calls == [
+        ("tmux_kill", "demo"),
+        ("cleanup", "demo"),
+        ("delete_token", "demo"),
+        ("remove_mapping", "demo"),
+    ]
+    out = capsys.readouterr().out
+    assert out == "已终止会话: demo\n"
+    assert "tmux 会话已终止" not in out
+    assert "文件已清理" not in out
+    assert "完成" not in out
+
+
+
 def test_cmd_status_remote_prints_human_readable_status(monkeypatch, capsys):
     def fake_validate_remote_args(args, session_fallback=None):
         assert session_fallback == "demo"
@@ -331,7 +489,7 @@ def test_cmd_status_remote_prints_human_readable_status(monkeypatch, capsys):
     monkeypatch.setattr(remote_claude, "validate_remote_args", fake_validate_remote_args)
     monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
 
-    args = SimpleNamespace(remote=True, host="10.0.0.1", port=10000, token="secret-token", name="demo")
+    args = SimpleNamespace(remote=True, name="demo", host="10.0.0.1", port=10000, token="secret-token")
 
     result = remote_claude.cmd_status(args)
 
@@ -344,34 +502,21 @@ def test_cmd_status_remote_prints_human_readable_status(monkeypatch, capsys):
     assert "tmux=否" in out
 
 
+def test_cmd_status_local_prints_human_readable_status(monkeypatch, capsys):
+    monkeypatch.setattr(remote_claude, "is_session_active", lambda session: session == "demo")
+    monkeypatch.setattr(remote_claude, "tmux_session_exists", lambda session: session == "demo")
 
-
-def test_cmd_status_remote_prints_human_readable_status(monkeypatch, capsys):
-    def fake_validate_remote_args(args, session_fallback=None):
-        assert session_fallback == "demo"
-        return ("10.0.0.1", 10000, "demo", "secret-token")
-
-    calls = []
-
-    def fake_run_remote_control(host, port, session, token, operation):
-        calls.append((host, port, session, token, operation))
-        remote_claude._print_remote_status_result('{"session":"demo","active":true,"tmux":false}')
-        return 0
-
-    monkeypatch.setattr(remote_claude, "validate_remote_args", fake_validate_remote_args)
-    monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
-
-    args = SimpleNamespace(remote=True, host="10.0.0.1", port=10000, token="secret-token", name="demo")
+    args = SimpleNamespace(remote=False, name="demo")
 
     result = remote_claude.cmd_status(args)
 
     assert result == 0
-    assert calls == [("10.0.0.1", 10000, "demo", "secret-token", "status")]
     out = capsys.readouterr().out
     assert "会话状态:" in out
     assert "demo" in out
     assert "active=是" in out
-    assert "tmux=否" in out
+    assert "tmux=是" in out
+    assert "功能开发中" not in out
 
 
 def test_cmd_regenerate_token_uses_validate_remote_args_and_run_remote_control(monkeypatch):

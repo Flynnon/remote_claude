@@ -37,8 +37,8 @@ curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/script
 | `cl` | Claude | 跳过权限确认 | 快速启动 Claude 会话 |
 | `cx` | Codex | 跳过权限确认 | 快速启动 Codex 会话 |
 | `cdx` | Codex | 默认权限模式 | 启动 Codex 会话 |
-| `remote-claude start <name>` | Claude/Codex | 按启动器配置执行 | 启动命名会话 |
-| `remote-claude attach <name>` | Claude/Codex | 连接已有会话 | 从另一个终端接入 |
+| `remote-claude start <session>` | Claude/Codex | 按启动器配置执行 | 启动命名会话 |
+| `remote-claude attach <session>` | Claude/Codex | 连接已有会话 | 从另一个终端接入 |
 
 ```bash
 cla        # 在当前目录启动 Claude 会话
@@ -53,7 +53,7 @@ remote-claude attach demo
 
 ```bash
 remote-claude list              # 查看所有会话
-remote-claude attach <会话名>   # 连接现有会话
+remote-claude attach <session>  # 连接现有会话
 remote-claude uninstall         # 清理本地数据并提示 npm/pnpm 卸载命令
 remote-claude uninstall --yes   # 跳过确认，直接执行清理
 ```
@@ -63,16 +63,16 @@ remote-claude uninstall --yes   # 跳过确认，直接执行清理
 当服务端已开启远程连接能力后，可通过 `--remote --host --token` 控制目标会话：
 
 ```bash
-remote-claude list --remote --host 10.0.0.1 --token <token>
-remote-claude status demo --remote --host 10.0.0.1 --token <token>
-remote-claude kill demo --remote --host 10.0.0.1 --token <token>
-remote-claude token demo --remote --host 10.0.0.1 --token <token>
-remote-claude regenerate-token demo --remote --host 10.0.0.1 --token <token>
+remote-claude list --remote --host <host> --token <token>
+remote-claude status <session> --remote --host <host> --token <token>
+remote-claude kill <session> --remote --host <host> --token <token>
+remote-claude token <session> --remote --host <host> --token <token>
+remote-claude regenerate-token <session> --remote --host <host> --token <token>
 ```
 
 说明：
-- 远程 `list` 当前返回的是**当前 WebSocket 入口绑定 session 的状态信息**，不是远端机器上所有会话的全局枚举。
-- 远程 `status` / `kill` / `token` / `regenerate-token` 仍然要求显式传入目标 session 名称。
+- 远程 `list` 当前返回的是**当前 WebSocket 入口绑定会话**的状态信息，不是远端机器上所有会话的全局枚举。
+- 远程 `status` / `kill` / `token` / `regenerate-token` 仍然要求显式传入目标会话名称。
 - 远程 `token` 返回的是当前 token 的预览值，不会直接回显完整 token。
 - 远程 `regenerate-token` 会使旧 token 失效，并返回新 token 的预览值。
 - 本地 `token` / `regenerate-token` 会直接输出完整 token，适合在受信任终端中执行。
@@ -87,16 +87,17 @@ remote-claude lark stop    # 停止
 remote-claude lark status  # 查看状态
 ```
 
-飞书机器人配置详见 [docs/feishu-setup.md](docs/feishu-setup.md)。
+- 飞书机器人配置：见 [docs/feishu-setup.md](docs/feishu-setup.md)
+- 飞书客户端管理与运维：见 [docs/feishu-client.md](docs/feishu-client.md)
 
 ## 更多文档
 
-- [配置说明](docs/configuration.md) — 完整配置项说明
-- [飞书配置](docs/feishu-setup.md) — 飞书机器人配置教程
-- [飞书客户端](docs/feishu-client.md) — 飞书客户端管理指南
-- [远程连接](docs/remote-connection.md) — 远程连接详细说明
+- [配置说明](docs/configuration.md) — 配置文件、环境变量与重置命令
+- [飞书配置](docs/feishu-setup.md) — 飞书机器人创建、权限与接入配置
+- [飞书客户端](docs/feishu-client.md) — 飞书客户端启动、状态、日志与运维说明
+- [远程连接](docs/remote-connection.md) — 远程连接模型、token、attach/connect 与远程管理语义
 - [CLI 参考](docs/cli-reference.md) — 完整命令参考
-- [Docker 测试](docs/docker-test.md) — Docker 测试说明
+- [Docker 测试](docs/docker-test.md) — Docker 回归流程与测试产物说明
 - [开发者指南](docs/developer.md) — 项目结构、技术栈与开发约定
 
 ## 系统要求

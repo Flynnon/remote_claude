@@ -112,7 +112,7 @@ class RemoteClient(BaseWSClient):
                 ping_timeout=60,
             )
             self._connected = True
-            print(f"✅ 已连接到远程会话: {self.session_name}@{self.host}")
+            print(f"✅ 已连接到会话: {self.session_name} @ {self.host}")
             return True
         except Exception as e:
             self._disconnect_reason = f"连接失败: {e}"

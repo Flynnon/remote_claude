@@ -38,13 +38,37 @@ class TestLocalClientIntegration:
         assert hasattr(client, 'socket_path')
 
     @pytest.mark.asyncio
-    async def test_local_client_connect_failure(self):
-        """测试本地客户端连接失败"""
-        client = LocalClient("nonexistent-session")
-        # 连接不存在的 socket 应该失败
+    async def test_local_client_connect_success_prints_unified_message(self, tmp_path, monkeypatch, capsys):
+        """测试本地客户端连接成功提示统一"""
+        client = LocalClient("demo")
+        client.socket_path = tmp_path / "demo.sock"
+        client.socket_path.write_text("")
+
+        reader = MagicMock()
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+
+        async def fake_open_unix_connection(path):
+            return reader, writer
+
+        monkeypatch.setattr(asyncio, "open_unix_connection", fake_open_unix_connection)
+
         result = await client.connect()
-        assert result == False
-        assert client._connected == False
+
+        assert result is True
+        out = capsys.readouterr().out
+        assert "✅ 已连接到会话: demo" in out
+
+
+@pytest.mark.asyncio
+async def test_base_client_disconnect_prints_shared_message(capsys):
+    """测试断线提示走统一出口"""
+    client = LocalClient("demo")
+
+    await client._on_disconnect("连接关闭: EOF")
+
+    out = capsys.readouterr().out
+    assert "已断开连接: 连接关闭: EOF" in out
 
 
 class TestRemoteClientIntegration:
@@ -98,6 +122,24 @@ class TestRemoteClientIntegration:
             result = await client.connect()
             assert result == True
             assert client._connected == True
+
+    @pytest.mark.asyncio
+    async def test_remote_client_connect_prints_unified_success_message(self, capsys):
+        """测试远程客户端连接成功提示统一"""
+        client = RemoteClient("192.168.1.100", "demo", "token123", 8765)
+
+        mock_ws = MagicMock()
+        mock_ws.close = AsyncMock()
+
+        async def mock_websockets_connect(*args, **kwargs):
+            return mock_ws
+
+        with patch('client.remote_client.connect', side_effect=mock_websockets_connect):
+            result = await client.connect()
+
+        assert result is True
+        out = capsys.readouterr().out
+        assert "✅ 已连接到会话: demo @ 192.168.1.100" in out
 
     @pytest.mark.asyncio
     async def test_remote_client_send_message_mocked(self):

@@ -1,0 +1,436 @@
+# CLI 命令参考
+
+Remote Claude 提供完整的命令行工具，用于管理 Claude/Codex 会话。
+
+## 快捷命令
+
+`remote-claude` 是公开 CLI 主入口，`cla`、`cl`、`cx`、`cdx` 是面向常用场景的快捷启动脚本。
+
+| 命令 | 说明 | 权限模式 |
+|------|------|---------|
+| `cla` | 启动 Claude 会话 | 默认权限模式 |
+| `cl` | 启动 Claude 会话 | 跳过权限确认 |
+| `cx` | 启动 Codex 会话 | 跳过权限确认 |
+| `cdx` | 启动 Codex 会话 | 默认权限模式 |
+
+```bash
+cla        # 在当前目录启动 Claude 会话（会话名：当前目录路径+时间戳）
+cl         # 启动 Claude，并跳过权限确认
+cx         # 在当前目录启动 Codex，会跳过权限确认
+cdx        # 在当前目录启动 Codex，使用默认权限模式
+```
+
+如果需要稳定的会话名、从其他终端复用同一会话，或执行清理类操作，优先使用主命令：
+
+```bash
+remote-claude start <session>
+remote-claude attach <session>
+remote-claude status <session>
+remote-claude kill <session>
+remote-claude uninstall
+```
+
+## 主命令
+
+### start - 启动会话
+
+```bash
+remote-claude start <会话名> [选项]
+```
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--launcher <name>` | 启动器名称（如 Claude/Codex），不指定则使用默认启动器 |
+| `--remote` | 启用远程模式 |
+| `--remote-port <port>` | 远程端口，默认 8765 |
+| `--remote-host <host>` | 远程监听地址，默认 0.0.0.0 |
+
+**示例**：
+```bash
+# 启动本地会话
+remote-claude start my-session
+
+# 启动远程会话
+remote-claude start my-session --remote --remote-port 8765
+
+# 指定启动器
+remote-claude start my-session --launcher Codex
+```
+
+### attach - 连接会话
+
+```bash
+remote-claude attach <会话名> [选项]
+```
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--remote` | 远程连接模式 |
+| `--host <host>` | 远程主机地址（支持 host:port 格式） |
+| `--token <token>` | 连接 Token |
+| `--save` | 保存连接配置 |
+| `--config-name <name>` | 配置名称 |
+
+**示例**：
+```bash
+# 本地连接
+remote-claude attach my-session
+
+# 远程连接
+remote-claude attach my-session --remote --host example.com:8765 --token xxx
+
+# 保存配置
+remote-claude attach my-session --remote --host example.com:8765 --token xxx --save
+```
+
+### list - 列出会话
+
+```bash
+remote-claude list [选项]
+```
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--remote` | 远程模式 |
+| `--host <host>` | 远程主机 |
+| `--token <token>` | 连接 Token |
+
+**示例**：
+```bash
+# 列出本地会话
+remote-claude list
+
+# 列出远程会话
+remote-claude list --remote --host example.com:8765 --token xxx
+```
+
+**说明**：
+- 本地 `list` 会枚举当前机器上的活跃会话。
+- 远程 `list` 当前返回的是**当前 WebSocket 入口绑定会话**的状态信息，不是远端所有会话的全局枚举。
+
+### kill - 终止会话
+
+```bash
+remote-claude kill <会话名> [选项]
+```
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--remote` | 远程模式 |
+| `--host <host>` | 远程主机 |
+| `--token <token>` | 连接 Token |
+
+**示例**：
+```bash
+# 终止本地会话
+remote-claude kill my-session
+
+# 终止远程会话
+remote-claude kill my-session --remote --host example.com:8765 --token xxx
+```
+
+### status - 查看状态
+
+```bash
+remote-claude status <会话名> [选项]
+```
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--remote` | 远程模式 |
+| `--host <host>` | 远程主机 |
+| `--token <token>` | 连接 Token |
+
+**示例**：
+```bash
+# 查看本地状态
+remote-claude status my-session
+
+# 查看远程状态
+remote-claude status my-session --remote --host example.com:8765 --token xxx
+```
+
+**说明**：
+- 远程 `status` 当前展示会话名、`active` 与 `tmux` 状态。
+- 远程 `status` 需要显式传入目标会话名称。
+
+### log - 查看日志
+
+```bash
+remote-claude log [会话名]
+```
+
+不指定会话名时查看最近会话的日志。
+
+**示例**：
+```bash
+# 查看指定会话日志
+remote-claude log my-session
+
+# 查看最近会话日志
+remote-claude log
+```
+
+### stats - 使用统计
+
+```bash
+remote-claude stats
+```
+
+显示使用统计信息。
+
+### update - 更新版本
+
+```bash
+remote-claude update
+```
+
+更新到最新版本。
+
+### uninstall - 卸载清理
+
+```bash
+remote-claude uninstall [选项]
+```
+
+清理本地数据并提示后续的 npm/pnpm 卸载命令。
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `-y`, `--yes` | 跳过确认，直接执行清理 |
+
+**示例**：
+```bash
+# 交互式清理
+remote-claude uninstall
+
+# 跳过确认
+remote-claude uninstall --yes
+```
+
+### config - 配置管理
+
+```bash
+remote-claude config reset [选项]
+```
+
+当前公开的 `config` 子命令仅包含 `reset`。
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--all` | 重置全部配置（用户配置 + 运行时状态） |
+| `--settings` | 仅重置用户配置 |
+| `--state` | 仅重置运行时状态 |
+
+**示例**：
+```bash
+# 重置用户配置
+remote-claude config reset --settings
+
+# 重置全部配置
+remote-claude config reset --all
+
+# 仅重置运行时状态
+remote-claude config reset --state
+```
+
+## Token 管理
+
+### token - 显示 Token
+
+```bash
+remote-claude token <会话名> [选项]
+```
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--remote` | 远程模式 |
+| `--host <host>` | 远程主机 |
+| `--token <token>` | 连接 Token |
+
+**示例**：
+```bash
+# 查看本地 token
+remote-claude token my-session
+
+# 查看远程 token 预览
+remote-claude token my-session --remote --host example.com:8765 --token xxx
+```
+
+**说明**：
+- 远程 `token` 返回的是当前 token 的预览值（默认仅前 8 位），用于确认，不会直接回显完整 token。
+- 远程 `token` 需要显式传入目标会话名称。
+
+### regenerate-token - 重新生成 Token
+
+```bash
+remote-claude regenerate-token <会话名> [选项]
+```
+
+**选项**：
+| 选项 | 说明 |
+|------|------|
+| `--remote` | 远程模式 |
+| `--host <host>` | 远程主机 |
+| `--token <token>` | 连接 Token |
+
+**示例**：
+```bash
+# 重新生成本地 token
+remote-claude regenerate-token my-session
+
+# 远程重新生成 token
+remote-claude regenerate-token my-session --remote --host example.com:8765 --token xxx
+```
+
+**说明**：
+- 远程 `regenerate-token` 会让旧 token 失效，并返回新 token 的预览值。
+- 远程 `regenerate-token` 需要显式传入目标会话名称。
+
+## 远程连接管理
+
+### connect - 简化连接
+
+```bash
+remote-claude connect <host>:<port>/<session> --token <token>
+```
+
+**示例**：
+```bash
+remote-claude connect example.com:8765/my-session --token xxx
+```
+
+### remote - 远程控制
+
+```bash
+remote-claude remote <子命令> <host>:<port>/<session> --token <token>
+```
+
+**子命令**：
+| 子命令 | 说明 |
+|--------|------|
+| `shutdown` | 关闭远程服务 |
+| `restart` | 重启远程服务 |
+| `update` | 更新远程服务版本 |
+
+**示例**：
+```bash
+remote-claude remote shutdown example.com:8765/my-session --token xxx
+```
+
+### connection - 连接配置管理
+
+```bash
+remote-claude connection <子命令>
+```
+
+**子命令**：
+| 子命令 | 说明 |
+|--------|------|
+| `list` | 列出所有保存的配置 |
+| `show <name>` | 查看配置详情 |
+| `set-default <name>` | 设置默认连接配置 |
+| `delete <name>` | 删除配置 |
+
+**示例**：
+```bash
+# 列出配置
+remote-claude connection list
+
+# 查看配置详情
+remote-claude connection show default
+
+# 设置默认连接配置
+remote-claude connection set-default myserver
+
+# 删除配置
+remote-claude connection delete oldserver
+```
+
+## 飞书客户端管理
+
+### lark - 飞书客户端命令
+
+```bash
+remote-claude lark <子命令> [选项]
+```
+
+**子命令**：
+| 子命令 | 说明 |
+|--------|------|
+| `start` | 启动飞书客户端 |
+| `stop` | 停止飞书客户端 |
+| `status` | 查看飞书客户端状态 |
+| `restart` | 重启飞书客户端 |
+
+**选项**（远程模式）：
+| 选项 | 说明 |
+|------|------|
+| `--remote` | 远程模式 |
+| `--host <host>` | 远程主机 |
+| `--token <token>` | 连接 Token |
+
+**示例**：
+```bash
+# 本地管理
+remote-claude lark start
+remote-claude lark status
+remote-claude lark stop
+
+# 远程管理
+remote-claude lark start --remote --host example.com:8765 --token xxx
+```
+
+## 飞书机器人命令
+
+在飞书中与机器人对话时可用：
+
+| 命令 | 说明 |
+|------|------|
+| `/menu` | 显示功能菜单 |
+| `/attach <会话名>` | 连接到会话 |
+| `/detach` | 断开会话连接 |
+| `/list` | 列出所有会话 |
+| `/help` | 显示帮助信息 |
+
+## 选项总览
+
+### 全局选项
+
+| 选项 | 说明 |
+|------|------|
+| `--help` | 显示帮助信息 |
+| `--version` | 显示版本号 |
+
+### 远程选项
+
+| 选项 | 说明 |
+|------|------|
+| `--remote` | 启用远程模式 |
+| `--host <host>` | 远程主机地址 |
+| `--token <token>` | 连接 Token |
+| `--remote-port <port>` | 远程端口（仅 start） |
+| `--remote-host <host>` | 监听地址（仅 start） |
+
+## 退出码
+
+| 退出码 | 说明 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 一般错误 |
+| 2 | 参数错误 |
+| 130 | 用户中断（Ctrl+C） |
+
+## 相关文档
+
+- [配置说明](./configuration.md)
+- [远程连接说明](./remote-connection.md)
+- [飞书客户端管理](./feishu-client.md)

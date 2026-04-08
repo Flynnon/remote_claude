@@ -345,24 +345,38 @@ def _build_remote_client(host: str, session: str, token: str, port: int):
     return RemoteClient(host, session, token, port)
 
 
+def _parse_json_message(message: str):
+    try:
+        return json.loads(message)
+    except json.JSONDecodeError:
+        return None
+
+
+def _print_session_status(session_name: str, active: bool, tmux: bool) -> None:
+    active_text = "是" if active else "否"
+    tmux_text = "是" if tmux else "否"
+    print("会话状态:")
+    print(f"- {session_name} (active={active_text}, tmux={tmux_text})")
+
+
+
 def _print_remote_list_result(message: str) -> None:
     """格式化打印远程 list 结果。"""
-    try:
-        payload = json.loads(message)
-    except json.JSONDecodeError:
+    payload = _parse_json_message(message)
+    if not isinstance(payload, dict):
         print(message)
         return
 
-    sessions = payload.get("sessions") if isinstance(payload, dict) else None
+    sessions = payload.get("sessions")
     if not isinstance(sessions, list):
         print(message)
         return
 
     if not sessions:
-        print("远程会话: 无")
+        print("活跃会话: 无")
         return
 
-    print("远程会话:")
+    print("活跃会话:")
     for item in sessions:
         if not isinstance(item, dict):
             print(f"- {item}")
@@ -375,21 +389,44 @@ def _print_remote_list_result(message: str) -> None:
 
 def _print_remote_status_result(message: str) -> None:
     """格式化打印远程 status 结果。"""
-    try:
-        payload = json.loads(message)
-    except json.JSONDecodeError:
-        print(message)
-        return
-
+    payload = _parse_json_message(message)
     if not isinstance(payload, dict):
         print(message)
         return
 
-    session_name = payload.get("session", "-")
-    active = "是" if payload.get("active") else "否"
-    tmux = "是" if payload.get("tmux") else "否"
-    print("会话状态:")
-    print(f"- {session_name} (active={active}, tmux={tmux})")
+    _print_session_status(
+        payload.get("session", "-"),
+        bool(payload.get("active")),
+        bool(payload.get("tmux")),
+    )
+
+
+
+def _print_token_result(title: str, session_name: str, token: str) -> None:
+    print(f"{title}:")
+    print(f"- 会话: {session_name}")
+    print(f"- Token: {token}")
+
+
+
+def _print_remote_control_success(action: str, message: str) -> None:
+    payload = _parse_json_message(message)
+
+    if action == 'list':
+        _print_remote_list_result(message)
+        return
+    if action == 'status':
+        _print_remote_status_result(message)
+        return
+    if action == 'token' and isinstance(payload, dict):
+        _print_token_result("会话 Token", payload.get("session", "-"), payload.get("token", ""))
+        return
+    if action == 'regenerate-token' and isinstance(payload, dict):
+        _print_token_result("新会话 Token", payload.get("session", "-"), payload.get("token", ""))
+        return
+
+    print(f"✓ {message}")
+
 
 
 def run_remote_control(host: str, port: int, session: str, token: str, action: str) -> int:
@@ -411,12 +448,7 @@ def run_remote_control(host: str, port: int, session: str, token: str, action: s
         client = _build_remote_client(host, session, token, port)
         result = await client.send_control(action)
         if result['success']:
-            if action == 'list':
-                _print_remote_list_result(result['message'])
-            elif action == 'status':
-                _print_remote_status_result(result['message'])
-            else:
-                print(f"✓ {result['message']}")
+            _print_remote_control_success(action, result['message'])
             return 0
         else:
             print(f"✗ {result['message']}")
@@ -877,25 +909,19 @@ def cmd_kill(args):
         print(f"错误: 会话 '{session_name}' 不存在")
         return 1
 
-    print(f"终止会话: {session_name}")
-
-    # 终止 tmux 会话
-    if tmux_session_exists(session_name):
+    tmux_exists = tmux_session_exists(session_name)
+    if tmux_exists:
         tmux_kill_session(session_name)
-        print("  - tmux 会话已终止")
 
-    # 清理文件
     cleanup_session(session_name)
 
     from server.token_manager import TokenManager
     TokenManager(session_name).delete_token_file()
-    print("  - 文件已清理")
 
-    # 删除会话映射
     from utils.runtime_config import remove_session_mapping
     remove_session_mapping(session_name)
 
-    print("完成")
+    print(f"已终止会话: {session_name}")
     return 0
 
 
@@ -919,9 +945,11 @@ def cmd_status(args):
         print(f"错误: 会话 '{session_name}' 不存在")
         return 1
 
-    # TODO: 实现状态查询
-    print(f"会话 '{session_name}' 状态:")
-    print("  (功能开发中)")
+    _print_session_status(
+        session_name,
+        True,
+        tmux_session_exists(session_name),
+    )
     return 0
 
 
@@ -1292,8 +1320,7 @@ def cmd_token(args):
 
     manager = TokenManager(session_name, _get_user_data_dir())
     token = manager.get_or_create_token()
-    print("会话 Token:")
-    print(f"- {session_name}: {token}")
+    _print_token_result("会话 Token", session_name, token)
     return 0
 
 
@@ -1317,9 +1344,7 @@ def cmd_regenerate_token(args):
 
     manager = TokenManager(session_name, _get_user_data_dir())
     new_token = manager.regenerate_token()
-    print("新会话 Token:")
-    print(f"- {session_name}: {new_token}")
-    print("- 旧 Token 已失效")
+    _print_token_result("新会话 Token", session_name, new_token)
     return 0
 
 
@@ -1345,12 +1370,13 @@ def cmd_lark(args):
 def cmd_config(args):
     """配置管理（无子命令时显示帮助）"""
     print("配置管理命令:")
-    print("\n  remote-claude config reset [选项]")
+    print()
+    print("  remote-claude config reset [选项]")
     print()
     print("选项:")
-    print("  --all       重置全部配置文件（config.json + runtime.json）")
-    print("  --config    仅重置用户配置（config.json）")
-    print("  --runtime   仅重置运行时配置（runtime.json）")
+    print("  --all       重置全部配置文件（settings.json + state.json）")
+    print("  --settings  仅重置用户配置（settings.json）")
+    print("  --state     仅重置运行时配置（state.json）")
     print()
     print("不带选项时进入交互式选择模式")
     return 0
@@ -1568,7 +1594,8 @@ def main():
   %(prog)s start mywork --remote                    启动会话并开启远程连接
   %(prog)s token mywork                             显示会话 token
   %(prog)s connect <host>:<port>/<session> --token <TOKEN>  连接远程会话
-  %(prog)s remote list <host>:<port>/<session> --token <TOKEN>  远程列出/控制会话
+  %(prog)s list --remote --host <HOST> --token <TOKEN>      查看远程 session 状态
+  %(prog)s remote shutdown <host>:<port>/<session> --token <TOKEN>  远程关闭服务
 """
     )
 
