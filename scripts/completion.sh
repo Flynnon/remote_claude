@@ -62,17 +62,36 @@ _remote_claude_get_sessions() {
         return 0
     fi
 
-    remote-claude list 2>/dev/null | \
-        sed 's/\x1b\[[0-9;]*m//g' | \
-        awk '
-            NF == 0 { next }
-            /^活跃会话:/ { next }
-            /^类型[[:space:]]+PID[[:space:]]+tmux[[:space:]]+名称$/ { next }
-            /^[-─]+$/ { next }
-            /^共[[:space:]][0-9]+[[:space:]]+个会话$/ { next }
-            /^没有活跃的会话$/ { next }
-            { print $NF }
-        '
+    while IFS= read -r _line; do
+        case "$_line" in
+            *$'\033'*)
+                _line=$(printf '%s\n' "$_line" | python3 -c 'import re, sys; print(re.sub(r"\x1b\[[0-9;]*m", "", sys.stdin.read()), end="")' 2>/dev/null || printf '%s' "$_line")
+                ;;
+        esac
+
+        case "$_line" in
+            ""|"活跃会话:"|"类型     PID      tmux     名称"|"没有活跃的会话")
+                continue
+                ;;
+            "共 "*" 个会话")
+                continue
+                ;;
+        esac
+
+        case "$_line" in
+            -*)
+                continue
+                ;;
+            "─"*|*"────────────────"*)
+                continue
+                ;;
+        esac
+
+        set -- $_line
+        [ $# -gt 0 ] && printf '%s\n' "${!#}"
+    done <<EOF
+$(remote-claude list 2>/dev/null)
+EOF
 }
 
 if [ -n "${ZSH_VERSION:-}" ]; then
@@ -97,10 +116,11 @@ if [ -n "${ZSH_VERSION:-}" ]; then
             "update:更新到最新版本"
             "config:配置管理"
             "connection:远程连接配置管理"
-            "token:显示会话 token"
-            "regenerate-token:重新生成 token"
             "connect:连接到远程会话"
+            "token:查看会话 token"
+            "regenerate-token:刷新会话 token"
             "remote:远程控制"
+            "uninstall:清理本地数据并提示卸载命令"
         )
         lark_cmds=(
             "start:启动飞书客户端"
@@ -135,7 +155,7 @@ elif [ -n "${BASH_VERSION:-}" ]; then
         _rc_bash_sessions=
 
         _rc_bash_cur="${COMP_WORDS[COMP_CWORD]}"
-        _rc_bash_commands="start attach list kill status lark stats log update config connection token regenerate-token connect remote"
+        _rc_bash_commands="start attach list kill status lark stats log update config connection token regenerate-token connect remote uninstall"
         _rc_bash_lark_cmds="start stop restart status"
 
         if [ "$COMP_CWORD" -eq 1 ]; then

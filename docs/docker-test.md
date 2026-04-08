@@ -35,28 +35,17 @@ docker buildx build --cache-to type=local,dest=.docker-cache --cache-from type=l
 
 当修改 npm 打包、安装脚本、shell 入口、启动链路或 Docker 逻辑时，优先运行：
 
-**CI 模式（推荐）：**
-
 ```bash
 docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
 ```
 
-成功后容器自动删除，失败后容器保持运行便于调试。
+这是当前推荐的终态回归方式：容器执行完成后自动退出，测试报告与安装产物保留在挂载出的 `test-results/` 目录中。
 
-**本地调试模式：**
+如需进入容器排障，可改为不带 `--rm` 运行，或直接启动交互 shell：
 
 ```bash
 docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
-```
-
-不使用 `--rm`，无论成功失败容器都会保留，便于查看测试产物。
-
-**交互式运行（直接进入 bash）：**
-
-```bash
 docker-compose -f docker/docker-compose.test.yml run npm-test /bin/bash
-# 容器内执行：
-/project/docker/scripts/docker-test.sh
 ```
 
 ### 环境清理
@@ -93,15 +82,15 @@ test-results/
 
 ```bash
 # 方式一：直接运行快捷命令（推荐）
-cd /home/testuser/test-npm-install/node_modules/remote-claude
+cd test-results/npm-install/node_modules/remote-claude
 ./bin/cla  # 启动 Claude 会话
 
 # 方式二：使用公开入口查看帮助
-cd /home/testuser/test-npm-install/node_modules/remote-claude
+cd test-results/npm-install/node_modules/remote-claude
 ./bin/remote-claude --help
 
 # 方式三：激活虚拟环境后使用（传统方式）
-source /home/testuser/test-npm-install/node_modules/remote-claude/.venv/bin/activate
+source test-results/npm-install/node_modules/remote-claude/.venv/bin/activate
 remote-claude --help
 ```
 
@@ -137,30 +126,32 @@ remote-claude start demo --launcher Codex
 
 ```bash
 # 验证 Python 环境
-/home/testuser/test-npm-install/node_modules/remote-claude/.venv/bin/python3 --version
+test-results/npm-install/node_modules/remote-claude/.venv/bin/python3 --version
 
 # 验证依赖
-/home/testuser/test-npm-install/node_modules/remote-claude/.venv/bin/python3 -c "import lark_oapi; print('✓ 依赖完整')"
+test-results/npm-install/node_modules/remote-claude/.venv/bin/python3 -c "import lark_oapi; print('✓ 依赖完整')"
 
 # 验证命令可用
-/home/testuser/test-npm-install/node_modules/remote-claude/bin/cla --help
-/home/testuser/test-npm-install/node_modules/remote-claude/bin/remote-claude --help
+test-results/npm-install/node_modules/remote-claude/bin/cla --help
+test-results/npm-install/node_modules/remote-claude/bin/remote-claude --help
 ```
 
 ## 测试流程
 
-Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
+Docker 测试模拟真实用户从 npm 安装 remote-claude 的当前终态流程：
 
 1. **环境检查** - 验证 Python、uv、tmux、npm、Claude CLI、Codex CLI
 2. **打包 npm 包** - 执行 `npm pack` 生成 `.tgz` 文件
 3. **模拟用户安装** - 在临时目录执行 `npm install <packaged_file>`
 4. **验证 postinstall** - 检查 `.venv`、`pyproject.toml`、Python 依赖
-5. **env 配置与启动链路测试** - 验证 `check-env.sh` 的跳过逻辑、`lark start` 不阻塞、`remote-claude start` 正常启动，以及无效启动器配置能被识别
+5. **会话启动验证** - 验证 `remote-claude start` 与 `remote-claude start --launcher Codex` 能创建 socket，且会话可被 `remote-claude list` 看到
 6. **测试基本命令** - 验证主入口、列表命令、快捷脚本语法与关键行为
 7. **文件完整性检查** - 验证关键文件（含 `resources/defaults/` 模板文件）是否存在
-8. **执行独立单元测试** - 运行核心测试（失败终止）和非核心测试（失败继续）
+8. **验证卸载钩子** - 验证 uninstall hook 可在非交互模式下执行
 9. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
-10. **清理** - 成功时退出容器；失败时保留容器、会话日志与测试产物便于调试
+10. **清理** - 测试脚本结束后直接退出容器；如需保留容器调试，请改用不带 `--rm` 的运行方式
+
+步骤 5、6、7、8 会继续执行并写入最终报告；但任一步骤失败时，脚本最终仍会以非零状态退出，便于 CI 正确判定失败。
 
 ## 独立单元测试
 

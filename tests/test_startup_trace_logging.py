@@ -1,6 +1,7 @@
 import logging
 import json
 import io
+from pathlib import Path
 from types import SimpleNamespace
 
 import remote_claude
@@ -28,6 +29,37 @@ def _mock_settings(launchers=None):
     return Settings(
         launchers=launchers or [Launcher(name="Claude", cli_type="claude", command="claude")]
     )
+
+
+def test_cmd_status_logs_remote_args_before_remote_control(monkeypatch):
+    calls = []
+
+    def fake_validate_remote_args(args, session_fallback=None):
+        calls.append(("validate", args.name, session_fallback))
+        return ("10.0.0.1", 10000, "demo", "secret-token")
+
+    def fake_log_remote_args(command, host, port, session, token):
+        calls.append(("log", command, host, port, session, token))
+
+    def fake_run_remote_control(host, port, session, token, operation):
+        calls.append(("run", host, port, session, token, operation))
+        return 0
+
+    monkeypatch.setattr(remote_claude, "validate_remote_args", fake_validate_remote_args)
+    monkeypatch.setattr(remote_claude, "_log_remote_args", fake_log_remote_args)
+    monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
+
+    args = SimpleNamespace(name="demo", remote=True, host="10.0.0.1", port=10000, token="secret-token")
+
+    result = remote_claude.cmd_status(args)
+
+    assert result == 0
+    assert calls == [
+        ("validate", "demo", "demo"),
+        ("log", "status", "10.0.0.1", 10000, "demo", "secret-token"),
+        ("run", "10.0.0.1", 10000, "demo", "secret-token", "status"),
+    ]
+
 
 
 def test_cmd_start_logs_trace_fields_and_sanitized_command_on_timeout(monkeypatch, tmp_path):
@@ -188,6 +220,38 @@ def test_cmd_start_accepts_monkeypatched_user_data_dir_path(monkeypatch, tmp_pat
 
 
 
+def test_read_start_log_lines_since_avoids_full_file_rereads(monkeypatch, tmp_path):
+    log_path = tmp_path / "startup.log"
+    first_line = "2099-04-01 12:00:00.000 [Start] INFO stage=server_spawn"
+    second_line = "2099-04-01 12:00:01.000 [Start] INFO stage=server_start_failed"
+    log_path.write_text(f"{first_line}\n", encoding="utf-8")
+
+    first_result = remote_claude._read_start_log_lines_since(
+        log_path,
+        remote_claude.datetime(2099, 4, 1, 12, 0, 0),
+    )
+    assert first_result == [first_line]
+
+    original_read_text = Path.read_text
+    read_calls = []
+
+    def tracking_read_text(self, *args, **kwargs):
+        if self == log_path:
+            read_calls.append(self)
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", tracking_read_text)
+    log_path.write_text(f"{first_line}\n{second_line}\n", encoding="utf-8")
+
+    second_result = remote_claude._read_start_log_lines_since(
+        log_path,
+        remote_claude.datetime(2099, 4, 1, 12, 0, 0),
+    )
+
+    assert second_result == [first_line, second_line]
+    assert read_calls == []
+
+
 
 def test_cmd_start_logs_codex_launcher_metadata(monkeypatch, tmp_path, capsys):
     env_snapshot_file = tmp_path / "env.json"
@@ -262,7 +326,7 @@ def test_cmd_start_logs_codex_launcher_metadata(monkeypatch, tmp_path, capsys):
         assert rc == 0
         assert "会话已启动: rc-codex-session" in captured.out
         assert spawned
-        assert "--cli-type codex" in spawned[0][0]
+        assert "--cli-command codex" in spawned[0][0]
 
         text = capture_stream.getvalue()
         assert "cli_type=codex" in text

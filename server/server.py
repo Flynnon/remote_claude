@@ -58,11 +58,13 @@ SERVER_LOG_LEVEL_MAP = {
 # 加载用户 .env 配置
 try:
     from dotenv import load_dotenv
-    load_dotenv(get_env_file())
 except ImportError:
     logger.debug("dotenv 模块未安装，跳过 .env 加载")
-except OSError as e:
-    logger.warning(f"读取 .env 文件失败: {e}")
+else:
+    try:
+        load_dotenv(get_env_file())
+    except OSError as e:
+        logger.warning(f"读取 .env 文件失败: {e}")
 
 try:
     from stats import track as _track_stats
@@ -1075,7 +1077,7 @@ class ProxyServer:
             logger.debug(f"读取自定义命令配置失败: {e}")
 
         # 回退到默认值
-        return str(self.cli_type)
+        return self.cli_command or str(self.cli_type)
 
     def _start_pty(self):
         """启动 PTY 并运行 Claude"""
@@ -1299,7 +1301,7 @@ class ProxyServer:
             logger.error(f"客户端处理错误 ({client_id}): {e}", exc_info=True)
         finally:
             # 清理
-            del self.clients[client_id]
+            self.clients.pop(client_id, None)
             client.close()
             logger.info(f"客户端断开: {client_id}")
 
@@ -1462,8 +1464,6 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Remote Claude/Codex Server")
     parser.add_argument("session_name", help="会话名称")
     parser.add_argument("cli_args", nargs="*", help="传递给 CLI 的参数")
-    parser.add_argument("--cli-type", default="claude", choices=["claude", "codex"],
-                        help="后端 CLI 类型（默认 claude）")
     parser.add_argument("--cli-command", default=None,
                         help="直接指定 CLI 命令（优先级最高，如 'aider --model claude-sonnet-4'）")
     parser.add_argument("--debug-screen", action="store_true",
@@ -1482,11 +1482,10 @@ def main(argv=None):
 
     logger.info(
         "stage=server_bootstrap session=%s cli_type=%s enable_remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
-        args.session_name, args.cli_type, args.remote, args.remote_host, args.remote_port, len(args.cli_args),
+        args.session_name, "claude", args.remote, args.remote_host, args.remote_port, len(args.cli_args),
     )
 
     run_server(args.session_name, args.cli_args,
-               cli_type=args.cli_type,
                cli_command=args.cli_command,
                debug_screen=args.debug_screen, debug_verbose=args.debug_verbose,
                enable_remote=args.remote,

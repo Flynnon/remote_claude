@@ -18,12 +18,14 @@ Remote Claude 是共享 Claude/Codex CLI 会话的双端工具：本地会话运
 
 ## 项目结构
 
-- `remote-claude`：公开 CLI 主入口
-- `remote_claude.py`：CLI 实现入口，负责参数解析与命令分发
-- `bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx`：面向常用场景的快捷启动脚本
-- `server/`：PTY 代理、输出广播、远程连接、token 管理
+- `bin/remote-claude`：公开 CLI 主入口 shell launcher，负责 help 短路、lazy init 分流与启动目录保持
+- `remote_claude.py`：CLI 实现入口，负责参数解析、命令分发与启动链路编排
+- `bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx`：面向常用场景的快捷启动脚本，不承担远程管理入口职责
+- `server/server.py`：PTY → parser → snapshot → shared memory 主链路，负责 PTY 代理、输出广播、远程连接与终端状态恢复
 - `client/`：本地 Unix Socket / 远程 WebSocket 客户端
-- `lark_client/`：飞书消息、卡片交互与共享状态展示
+- `server/ws_handler.py`：WebSocket 鉴权、远程控制动作与远程 Lark 管理入口
+- `lark_client/main.py`：飞书消息与卡片交互入口
+- `lark_client/`：飞书消息、卡片交互与共享状态展示，不负责字符串修复或 ANSI 清理
 - `utils/`：会话管理、协议、日志、运行时配置
 - `scripts/`：安装、卸载、shell 补全、环境检查脚本
 - `tests/`：单元测试、集成测试与回归测试

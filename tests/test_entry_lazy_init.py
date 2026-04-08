@@ -1162,7 +1162,7 @@ def test_check_env_allows_skip_when_feishu_not_required(tmp_path: Path):
     check_env.write_text((REPO_ROOT / "scripts" / "check-env.sh").read_text(encoding="utf-8"), encoding="utf-8")
     (script_dir / "_common.sh").write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"),
                                            encoding="utf-8")
-    (resources_dir / ".env.example").write_text("FEISHU_APP_ID=cli_xxxxx\nFEISHU_APP_SECRET=xxxxx\n", encoding="utf-8")
+    (resources_dir / "env.example").write_text("FEISHU_APP_ID=cli_xxxxx\nFEISHU_APP_SECRET=xxxxx\n", encoding="utf-8")
 
     shell_script = f"""#!/bin/sh
 set -e
@@ -1177,6 +1177,41 @@ echo skip-ok
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith("skip-ok")
+
+
+def test_common_exports_current_home_paths(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    scripts_dir = project_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+
+    common_sh = scripts_dir / "_common.sh"
+    common_sh.write_text((REPO_ROOT / "scripts" / "_common.sh").read_text(encoding="utf-8"), encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh"],
+        input=f"""#!/bin/sh
+set -e
+HOME='{tmp_path / 'home'}'
+mkdir -p "$HOME"
+PROJECT_DIR='{project_dir}'
+LAZY_INIT_DISABLE_AUTO_RUN=1
+. '{common_sh}'
+printf 'settings=%s\n' "$REMOTE_CLAUDE_SETTINGS_FILE"
+printf 'state=%s\n' "$REMOTE_CLAUDE_STATE_FILE"
+printf 'env=%s\n' "$REMOTE_CLAUDE_ENV_FILE"
+printf 'socket=%s\n' "$REMOTE_CLAUDE_SOCKET_DIR"
+""",
+        text=True,
+        capture_output=True,
+        cwd=project_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"settings={tmp_path / 'home' / '.remote-claude' / 'settings.json'}" in result.stdout
+    assert f"state={tmp_path / 'home' / '.remote-claude' / 'state.json'}" in result.stdout
+    assert f"env={tmp_path / 'home' / '.remote-claude' / '.env'}" in result.stdout
+    assert "socket=/tmp/remote-claude" in result.stdout
+
 
 
 def test_common_exports_centralized_runtime_paths(tmp_path: Path):
@@ -1562,15 +1597,15 @@ def test_common_shortcut_helper_declares_launcher_and_permission_vars():
 
 def test_docker_test_script_checks_shared_shortcut_entry_instead_of_inline_lark_start():
     content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert 'grep -q "_remote_claude_shortcut_help_or_main" "$install_dir/../bin/cla"' in content
-    assert 'grep -q "lark start" "$install_dir/../bin/cla"' not in content
+    assert 'grep -q "_remote_claude_shortcut_help_or_main" "$install_dir/node_modules/remote-claude/bin/cla"' in content
+    assert 'grep -q "lark start" "$install_dir/node_modules/remote-claude/bin/cla"' not in content
 
 
-def test_docker_test_script_no_longer_uses_legacy_claude_command_as_failure_signal():
+def test_docker_test_script_uses_codex_startup_check_only():
     content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert 'start_legacy_claude_command.log' in content
-    assert '旧 CLAUDE_COMMAND 配置未影响当前 launcher 启动链路' in content
-    assert '负面测试：CLAUDE_COMMAND=claudeyy 应导致 start 在 20s 内失败退出' not in content
+    assert 'start_legacy_claude_command.log' not in content
+    assert '旧 CLAUDE_COMMAND 配置未影响当前 launcher 启动链路' not in content
+    assert 'CLAUDE_COMMAND=claudeyy' not in content
 
 
 def test_setup_runtime_creation_stays_in_success_flow():
@@ -2143,8 +2178,7 @@ def test_uninstall_keeps_manual_prompt_when_only_generic_npm_env_present(tmp_pat
     assert result.returncode == 0, result.stderr
     assert data_dir.exists()
     assert "[y/N]" in result.stdout
-    assert "是否删除配置文件和数据" in result.stdout
-    assert "已删除配置目录" not in result.stdout
+    assert (data_dir / "settings.json").exists()
 
 
 def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
@@ -2167,16 +2201,27 @@ def test_uninstall_keeps_manual_prompt_outside_npm_context(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert data_dir.exists()
     assert "[y/N]" in result.stdout
-    assert "是否删除配置文件和数据" in result.stdout
-    assert "已删除配置目录" not in result.stdout
+    assert (data_dir / "settings.json").exists()
 
 
 def test_uninstall_preserves_all_config_files_when_user_declines_cleanup(tmp_path: Path):
     data_dir = tmp_path / ".remote-claude"
     data_dir.mkdir()
-    (data_dir / "settings.json").write_text('{"settings":"keep"}\n', encoding="utf-8")
-    (data_dir / "state.json").write_text('{"state":"keep"}\n', encoding="utf-8")
-    (data_dir / ".env").write_text('TOKEN=keep\n', encoding="utf-8")
+
+    expected_files = {
+        "settings.json": '{"settings":"keep"}\n',
+        "state.json": '{"state":"keep"}\n',
+        ".env": 'TOKEN=keep\n',
+        "notes.txt": 'manual note\n',
+    }
+    for relative_path, content in expected_files.items():
+        (data_dir / relative_path).write_text(content, encoding="utf-8")
+
+    before_snapshot = {
+        path.relative_to(data_dir).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(data_dir.rglob("*"))
+        if path.is_file()
+    }
 
     result = subprocess.run(
         ["sh", str(REPO_ROOT / "scripts" / "uninstall.sh")],
@@ -2190,10 +2235,19 @@ def test_uninstall_preserves_all_config_files_when_user_declines_cleanup(tmp_pat
         input="n\n",
     )
 
+    after_snapshot = {
+        path.relative_to(data_dir).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(data_dir.rglob("*"))
+        if path.is_file()
+    }
+
     assert result.returncode == 0, result.stderr
-    assert (data_dir / "settings.json").read_text(encoding="utf-8") == '{"settings":"keep"}\n'
-    assert (data_dir / "state.json").read_text(encoding="utf-8") == '{"state":"keep"}\n'
-    assert (data_dir / ".env").read_text(encoding="utf-8") == 'TOKEN=keep\n'
+    assert data_dir.exists()
+    assert before_snapshot == expected_files
+    assert after_snapshot == before_snapshot
+    assert sorted(path.relative_to(data_dir).as_posix() for path in data_dir.rglob("*") if path.is_file()) == sorted(
+        expected_files
+    )
 
 
 def test_uninstall_scans_pnpm_library_bin_dir_for_shortcuts():
@@ -2442,7 +2496,6 @@ def test_setup_uses_centralized_path_variables_only():
         "config.default.json",
         "runtime.default.json",
         "lark_group_mapping.json",
-        "CLAUDE_COMMAND",
         "ready_notify_enabled",
         "urgent_notify_enabled",
         "bypass_enabled",

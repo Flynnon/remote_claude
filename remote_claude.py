@@ -225,19 +225,44 @@ def _sanitize_command_for_log(command: str) -> str:
 
 
 def _read_start_log_lines_since(log_path: Path, start_time: datetime) -> list[str]:
-    if not log_path.exists():
+    cache = getattr(_read_start_log_lines_since, "_cache", {})
+    try:
+        stat = log_path.stat()
+    except FileNotFoundError:
+        cache.pop(log_path, None)
+        _read_start_log_lines_since._cache = cache
         return []
 
-    lines = []
-    for line in log_path.read_text(encoding="utf-8").splitlines():
+    cached = cache.get(log_path)
+    if cached and cached["mtime_ns"] == stat.st_mtime_ns and cached["size"] == stat.st_size:
+        lines = cached["lines"]
+    else:
+        previous_lines = cached["lines"] if cached else []
+        previous_size = cached["size"] if cached else 0
+        if cached and stat.st_size >= previous_size:
+            with log_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                handle.seek(previous_size)
+                appended_lines = handle.read().splitlines()
+            lines = previous_lines + appended_lines
+        else:
+            lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        cache[log_path] = {
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+            "lines": lines,
+        }
+        _read_start_log_lines_since._cache = cache
+
+    matched_lines = []
+    for line in lines:
         try:
             ts = datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
             if ts >= start_time:
-                lines.append(line)
+                matched_lines.append(line)
         except ValueError:
-            if lines:
-                lines.append(line)
-    return lines
+            if matched_lines:
+                matched_lines.append(line)
+    return matched_lines
 
 
 def _read_recent_start_log_lines(log_path: Path, max_lines: int = 200) -> list[str]:
@@ -479,7 +504,7 @@ def cmd_start(args):
     cli_args_str = " ".join(shlex.quote(arg) for arg in cli_args)
     debug_flag = " --debug-screen" if args.debug_screen else ""
     debug_verbose_flag = " --debug-verbose" if args.debug_verbose else ""
-    cli_type_flag = f" --cli-type {cli_type}"
+    cli_command_flag = f" --cli-command {shlex.quote(command)}"
 
     # 捕获用户终端环境变量（tmux 会覆盖这些值，导致 Claude CLI 无法启用 kitty keyboard protocol）
     # 使用 shlex.quote 安全转义环境变量值
@@ -499,7 +524,7 @@ def cmd_start(args):
     server_cmd = (
         f"{env_prefix}uv run --project {shlex.quote(str(SCRIPT_DIR))} "
         f"python3 {shlex.quote(str(server_script))}{debug_flag}{debug_verbose_flag}"
-        f"{cli_type_flag}{remote_flag} -- {shlex.quote(session_name)} {cli_args_str}"
+        f"{cli_command_flag}{remote_flag} -- {shlex.quote(session_name)} {cli_args_str}"
     )
     server_cmd_sanitized = _sanitize_command_for_log(server_cmd)
 
@@ -860,6 +885,7 @@ def cmd_status(args):
         if not session:
             print("错误: 请指定会话名称")
             return 1
+        _log_remote_args("status", host, port, session, token)
         return run_remote_control(host, port, session, token, 'status')
 
     # 本地模式
@@ -1272,8 +1298,8 @@ def cmd_regenerate_token(args):
     return 0
 
 
-def cmd_lark(args):
-    """飞书客户端管理（兼容旧命令）"""
+def cmd_lark_status_or_help(args):
+    """飞书客户端管理默认入口。"""
     parser = getattr(args, '_subparser', None)
     if parser is not None:
         parser.print_help()
@@ -1297,9 +1323,9 @@ def cmd_config(args):
     print("\n  remote-claude config reset [选项]")
     print()
     print("选项:")
-    print("  --all       重置全部配置文件（config.json + runtime.json）")
-    print("  --config    仅重置用户配置（config.json）")
-    print("  --runtime   仅重置运行时配置（runtime.json）")
+    print("  --all       重置全部配置文件（settings.json + state.json）")
+    print("  --settings  仅重置用户配置（settings.json）")
+    print("  --state     仅重置运行时配置（state.json）")
     print()
     print("不带选项时进入交互式选择模式")
     return 0
@@ -1515,9 +1541,7 @@ def main():
 
 远程连接:
   %(prog)s start mywork --remote                    启动会话并开启远程连接
-  %(prog)s token mywork                             显示会话 token
   %(prog)s connect <host>:<port>/<session> --token <TOKEN>  连接远程会话
-  %(prog)s remote list <host>:<port>/<session> --token <TOKEN>  远程列出/控制会话
 """
     )
 
@@ -1626,7 +1650,7 @@ def main():
 
     # lark 命令（带子命令）
     lark_parser = subparsers.add_parser("lark", help="飞书客户端管理")
-    lark_parser.set_defaults(func=cmd_lark, _subparser=lark_parser)
+    lark_parser.set_defaults(func=cmd_lark_status_or_help, _subparser=lark_parser)
     lark_subparsers = lark_parser.add_subparsers(dest="lark_command", help="飞书客户端操作")
 
     # lark start
@@ -1737,9 +1761,8 @@ def main():
     connect_parser.set_defaults(func=cmd_connect)
 
     # remote 命令
-    remote_parser = subparsers.add_parser("remote", help="远程控制")
-    remote_parser.add_argument("action", choices=["shutdown", "restart", "update"],
-                               help="控制命令")
+    remote_parser = subparsers.add_parser("remote", help="远程控制（shutdown/restart/update）")
+    remote_parser.add_argument("action", choices=["shutdown", "restart", "update"], help="远程控制动作")
     remote_parser.add_argument("host", help="服务器地址（或 host:port/session）")
     remote_parser.add_argument("session", nargs="?", help="会话名称")
     remote_parser.add_argument("--token", required=True, help="认证 token")
@@ -1749,13 +1772,19 @@ def main():
     # token 命令
     token_parser = subparsers.add_parser("token", help="显示会话 token")
     token_parser.add_argument("session", help="会话名称")
-    add_remote_args(token_parser)
+    token_parser.add_argument("--remote", action="store_true", help="远程模式")
+    token_parser.add_argument("--host", help="远程主机")
+    token_parser.add_argument("--port", type=int, help="远程端口")
+    token_parser.add_argument("--token", help="连接 token")
     token_parser.set_defaults(func=cmd_token)
 
     # regenerate-token 命令
-    regen_parser = subparsers.add_parser("regenerate-token", help="重新生成 token")
+    regen_parser = subparsers.add_parser("regenerate-token", help="重新生成会话 token")
     regen_parser.add_argument("session", help="会话名称")
-    add_remote_args(regen_parser)
+    regen_parser.add_argument("--remote", action="store_true", help="远程模式")
+    regen_parser.add_argument("--host", help="远程主机")
+    regen_parser.add_argument("--port", type=int, help="远程端口")
+    regen_parser.add_argument("--token", help="连接 token")
     regen_parser.set_defaults(func=cmd_regenerate_token)
 
     args, remaining = parser.parse_known_args()

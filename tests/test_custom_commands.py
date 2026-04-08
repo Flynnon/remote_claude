@@ -260,6 +260,19 @@ def test_cmd_uninstall_passes_yes_flag_to_shell(monkeypatch):
     assert called["cmd"][-1] == "--yes"
 
 
+
+def test_completion_script_advertises_current_public_management_commands():
+    content = (REPO_ROOT / "scripts" / "completion.sh").read_text(encoding="utf-8")
+
+    assert '"connection:远程连接配置管理"' in content
+    assert '"connect:连接到远程会话"' in content
+    assert '"token:查看会话 token"' in content
+    assert '"regenerate-token:刷新会话 token"' in content
+    assert '"remote:远程控制"' in content
+    assert '"uninstall:清理本地数据并提示卸载命令"' in content
+    assert 'connection token regenerate-token connect remote uninstall' in content
+
+
 def test_completion_extracts_session_names_from_list_output():
     result = subprocess.run(
         ["bash"],
@@ -316,7 +329,43 @@ _remote_claude_get_sessions
     assert result.stdout.splitlines() == ["ansi_alpha", "ansi_beta"]
 
 
-def test_completion_degrades_safely_when_project_dir_cannot_be_resolved():
+
+
+def test_completion_extracts_session_names_without_extra_processes():
+    result = subprocess.run(
+        ["bash"],
+        input=f"""#!/usr/bin/env bash
+set -e
+PATH='/usr/bin:/bin:{REPO_ROOT}:$PATH'
+function remote-claude() {{
+cat <<'EOF'
+活跃会话:
+────────────────────────────────────────────────────────
+类型     PID      tmux     名称
+────────────────────────────────────────────────────────
+claude   123      yes      alpha_session
+codex    456      no       beta_session
+共 2 个会话
+EOF
+}}
+function sed() {{
+  echo 'sed should not be called' >&2
+  return 91
+}}
+function awk() {{
+  echo 'awk should not be called' >&2
+  return 92
+}}
+source '{REPO_ROOT / 'scripts' / 'completion.sh'}'
+_remote_claude_get_sessions
+""",
+        text=True,
+        capture_output=True,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["alpha_session", "beta_session"]
     result = subprocess.run(
         ["bash"],
         input=f"""#!/usr/bin/env bash

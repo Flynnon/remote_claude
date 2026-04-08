@@ -148,6 +148,14 @@ def test_ui_settings():
     assert "up" in ui.enabled_keys
 
 
+
+def test_ui_defaults_match_documented_shortcuts():
+    ui = UiSettings()
+
+    assert ui.show_builtin_keys is True
+    assert ui.enabled_keys == ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
+
+
 # ============== 加载/保存测试 ==============
 
 def test_load_save_settings():

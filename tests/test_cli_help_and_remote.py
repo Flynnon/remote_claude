@@ -62,8 +62,8 @@ def test_bin_remote_claude_help_exits_cleanly_without_spawning_session(tmp_path)
     assert "remote_claude.py" not in result.stdout
 
 
-def test_main_help_uses_launcher_wording_only(tmp_path):
-    home_dir = tmp_path / "main_help_launcher_only"
+def test_main_help_uses_current_public_start_surface_only(tmp_path):
+    home_dir = tmp_path / "main_help_current_public_start_surface"
     (home_dir / ".remote-claude").mkdir(parents=True)
 
     install_dir_file = REPO_ROOT / "test-results" / "install_dir.txt"
@@ -88,8 +88,197 @@ def test_main_help_uses_launcher_wording_only(tmp_path):
 
     assert result.returncode == 0
     assert "--launcher" in result.stdout
+    assert "--remote" in result.stdout
+    assert "--remote-host" in result.stdout
+    assert "--remote-port" in result.stdout
+    assert "--cli-command" not in result.stdout
     assert "--cli-type" not in result.stdout
     assert "--cli_type" not in result.stdout
+
+
+def test_main_help_advertises_current_public_management_commands(tmp_path):
+    home_dir = tmp_path / "main_help_current_public_management_commands"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+
+    install_dir_file = REPO_ROOT / "test-results" / "install_dir.txt"
+    command_path = REPO_ROOT / "bin" / "remote-claude"
+    command_cwd = REPO_ROOT
+    env_overrides = {}
+    if install_dir_file.exists():
+        install_dir = Path(install_dir_file.read_text(encoding="utf-8").strip())
+        candidate = install_dir / "node_modules" / "remote-claude"
+        if candidate.exists():
+            command_path = candidate / "bin" / "remote-claude"
+            command_cwd = candidate
+            env_overrides = {
+                "REMOTE_CLAUDE_UV_PROJECT_DIR": str(candidate),
+                "REMOTE_CLAUDE_FORCE_UV_RUN": "1",
+            }
+            broken_python = candidate / ".venv" / "bin" / "python3"
+            if broken_python.exists() or broken_python.is_symlink():
+                broken_python.unlink()
+
+    result = subprocess.run(
+        [str(command_path), "--help"],
+        cwd=command_cwd,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home_dir), **env_overrides},
+    )
+
+    assert result.returncode == 0
+    assert "connection       远程连接配置管理" in result.stdout
+    assert "remote-claude attach mywork --remote --host host:8765 --token <token>" in result.stdout
+    assert "remote-claude connect host:8765/mywork --token <token>" in result.stdout
+    assert "remote-claude token mywork" in result.stdout
+    assert "remote-claude regenerate-token mywork" in result.stdout
+    assert "remote-claude remote restart <host>" in result.stdout
+    assert "uninstall        清理环境" in result.stdout
+
+
+def test_cmd_remote_uses_current_remote_control_path(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        async def send_control(self, action):
+            calls.append(("send_control", action))
+            return {"success": True, "message": "ok"}
+
+    def fake_build_remote_client(host, session, token, port):
+        calls.append(("build", host, session, token, port))
+        return FakeClient()
+
+    monkeypatch.setattr(remote_claude, "_build_remote_client", fake_build_remote_client)
+
+    args = SimpleNamespace(action="restart", host="10.0.0.1", port=10000, token="secret-token", session="demo")
+    result = remote_claude.cmd_remote(args)
+
+    assert result == 0
+    assert calls == [
+        ("build", "10.0.0.1", "demo", "secret-token", 10000),
+        ("send_control", "restart"),
+    ]
+
+
+
+def test_cmd_token_uses_validate_remote_args_and_run_remote_control(monkeypatch):
+    calls = []
+
+    def fake_validate_remote_args(args, session_fallback=None):
+        calls.append(("validate", args, session_fallback))
+        return ("10.0.0.1", 10000, "demo", "secret-token")
+
+    def fake_run_remote_control(host, port, session, token, operation):
+        calls.append(("run", host, port, session, token, operation))
+        return 0
+
+    monkeypatch.setattr(remote_claude, "validate_remote_args", fake_validate_remote_args)
+    monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
+
+    args = SimpleNamespace(session="demo", remote=True, host="10.0.0.1", port=10000, token="secret-token")
+    result = remote_claude.cmd_token(args)
+
+    assert result == 0
+    assert calls[0][0] == "validate"
+    assert calls[1] == ("run", "10.0.0.1", 10000, "demo", "secret-token", "token")
+
+
+
+def test_cmd_regenerate_token_uses_validate_remote_args_and_run_remote_control(monkeypatch):
+    calls = []
+
+    def fake_validate_remote_args(args, session_fallback=None):
+        calls.append(("validate", args, session_fallback))
+        return ("10.0.0.1", 10000, "demo", "secret-token")
+
+    def fake_run_remote_control(host, port, session, token, operation):
+        calls.append(("run", host, port, session, token, operation))
+        return 0
+
+    monkeypatch.setattr(remote_claude, "validate_remote_args", fake_validate_remote_args)
+    monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
+
+    args = SimpleNamespace(session="demo", remote=True, host="10.0.0.1", port=10000, token="secret-token")
+    result = remote_claude.cmd_regenerate_token(args)
+
+    assert result == 0
+    assert calls[0][0] == "validate"
+    assert calls[1] == ("run", "10.0.0.1", 10000, "demo", "secret-token", "regenerate-token")
+
+
+
+def test_remote_list_does_not_require_session_name():
+    args = SimpleNamespace(host="example.com", port=8765, token="secret-token", name="")
+
+    result = remote_claude.validate_remote_args(args, session_fallback="list")
+
+    assert result == ("example.com", 8765, "list", "secret-token")
+
+
+
+def test_cmd_config_help_uses_settings_and_state_names(capsys):
+    rc = remote_claude.cmd_config(SimpleNamespace())
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "settings.json" in captured.out
+    assert "state.json" in captured.out
+    assert "config.json" not in captured.out
+    assert "runtime.json" not in captured.out
+
+
+
+def test_remote_connection_doc_matches_current_public_remote_surface():
+    content = (REPO_ROOT / "docs" / "remote-connection.md").read_text(encoding="utf-8")
+
+    assert "remote-claude start <session> --remote" in content
+    assert "remote-claude attach ... --remote" in content
+    assert "remote-claude connect ..." in content
+    assert "remote-claude token <session>" in content
+    assert "remote-claude regenerate-token <session>" in content
+    assert "remote-claude remote <action> ..." in content
+    assert "remote-claude lark start --remote" in content
+    assert "stage=server_spawn" in content
+    assert "stage=server_start_failed" in content
+    assert "server_cmd_sanitized" in content
+    assert "remote-claude` 是公开 CLI 主入口" in content
+    assert "`cla`、`cl`、`cx`、`cdx` 仍是本地启动快捷脚本，不承担远程管理职责" in content
+
+
+
+def test_developer_doc_matches_server_and_lark_boundaries():
+    content = (REPO_ROOT / "docs" / "developer.md").read_text(encoding="utf-8")
+
+    assert "`server/server.py`：PTY → parser → snapshot → shared memory 主链路，负责 PTY 代理、输出广播、远程连接与终端状态恢复" in content
+    assert "`bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx`：面向常用场景的快捷启动脚本，不承担远程管理入口职责" in content
+    assert "`lark_client/`：飞书消息、卡片交互与共享状态展示，不负责字符串修复或 ANSI 清理" in content
+    assert "`server/ws_handler.py`：WebSocket 鉴权、远程控制动作与远程 Lark 管理入口" in content
+
+
+
+def test_feishu_client_doc_matches_current_lark_boundary_and_runtime_paths():
+    content = (REPO_ROOT / "docs" / "feishu-client.md").read_text(encoding="utf-8")
+
+    assert "~/.remote-claude/lark_client.log" in content
+    assert "Lark 侧不做 ANSI 清理" in content
+    assert "remote-claude lark stop" in content
+    assert "rm -f /tmp/remote-claude/lark.pid" not in content
+    assert "rm -f /tmp/remote-claude/lark.status" not in content
+
+
+
+def test_readme_and_cli_reference_cover_current_public_management_surface():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    cli_doc = (REPO_ROOT / "docs" / "cli-reference.md").read_text(encoding="utf-8")
+
+    for text in [
+        "remote-claude status <会话名>",
+        "remote-claude token <会话名>",
+        "remote-claude regenerate-token <会话名>",
+        "remote-claude uninstall",
+    ]:
+        assert text in readme or text in cli_doc
+
 
 
 def test_management_subcommand_help_and_empty_invocation_do_not_create_side_effects(tmp_path):
@@ -98,9 +287,6 @@ def test_management_subcommand_help_and_empty_invocation_do_not_create_side_effe
         ["connection", "--help"],
         ["conn", "--help"],
         ["connect", "--help"],
-        ["remote", "--help"],
-        ["token", "--help"],
-        ["regenerate-token", "--help"],
         ["uninstall", "--help"],
         ["connection", "list", "--help"],
         ["connection", "show", "--help"],
@@ -199,63 +385,3 @@ def test_connection_shortcuts_fall_back_to_uv_when_system_python_too_old(tmp_pat
 
     assert result.returncode == 0, result.stderr
     assert "scripts/setup.sh --npm --lazy" not in result.stderr
-
-
-def test_remote_list_does_not_require_session_name():
-    from remote_claude import validate_remote_args
-
-    args = type("Args", (), {
-        "host": "example.com",
-        "port": 8765,
-        "token": "secret-token",
-        "name": "",
-    })()
-
-    result = validate_remote_args(args, session_fallback="list")
-    assert result == ("example.com", 8765, "list", "secret-token")
-
-
-def test_cmd_remote_uses_validate_remote_args_and_run_remote_control(monkeypatch):
-    calls = []
-
-    def fake_validate_remote_args(args, session_fallback=None):
-        calls.append(("validate", args, session_fallback))
-        return ("10.0.0.1", 10000, "demo", "secret-token")
-
-    def fake_run_remote_control(host, port, session, token, operation):
-        calls.append(("run", host, port, session, token, operation))
-        return 0
-
-    monkeypatch.setattr(remote_claude, "validate_remote_args", fake_validate_remote_args)
-    monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
-
-    args = SimpleNamespace(remote=True, host="10.0.0.1", port=10000, token="secret-token", session="demo")
-
-    result = remote_claude.cmd_token(args)
-
-    assert result == 0
-    assert calls[0][0] == "validate"
-    assert calls[1] == ("run", "10.0.0.1", 10000, "demo", "secret-token", "token")
-
-
-def test_cmd_regenerate_token_uses_validate_remote_args_and_run_remote_control(monkeypatch):
-    calls = []
-
-    def fake_validate_remote_args(args, session_fallback=None):
-        calls.append(("validate", args, session_fallback))
-        return ("10.0.0.1", 10000, "demo", "secret-token")
-
-    def fake_run_remote_control(host, port, session, token, operation):
-        calls.append(("run", host, port, session, token, operation))
-        return 0
-
-    monkeypatch.setattr(remote_claude, "validate_remote_args", fake_validate_remote_args)
-    monkeypatch.setattr(remote_claude, "run_remote_control", fake_run_remote_control)
-
-    args = SimpleNamespace(remote=True, host="10.0.0.1", port=10000, token="secret-token", session="demo")
-
-    result = remote_claude.cmd_regenerate_token(args)
-
-    assert result == 0
-    assert calls[0][0] == "validate"
-    assert calls[1] == ("run", "10.0.0.1", 10000, "demo", "secret-token", "regenerate-token")

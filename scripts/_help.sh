@@ -46,20 +46,27 @@ Remote Claude - 双端共享 Claude/Codex CLI 工具
   status           显示会话状态             remote-claude status mywork
   log              查看会话日志             remote-claude log mywork
   lark             飞书客户端管理           remote-claude lark start
-  config           配置管理                 remote-claude config reset --config
+  config           配置管理                 remote-claude config reset --settings
   connection       远程连接配置管理         remote-claude connection list
-  token            显示会话 token           remote-claude token mywork
-  regenerate-token 重新生成 token           remote-claude regenerate-token mywork
+  connect          连接到远程会话           remote-claude connect host:8765/mywork --token <token>
+  remote           远程控制                 remote-claude remote restart <host>
+  token            查看会话 token           remote-claude token mywork
+  regenerate-token 刷新会话 token           remote-claude regenerate-token mywork
   stats            查看使用统计             remote-claude stats
   update           更新到最新版本           remote-claude update
-  connect          连接到远程会话           remote-claude connect <host>
-  remote           远程控制                 remote-claude remote shutdown <host>:<port>/<session> --token <TOKEN>
   uninstall        清理环境                 remote-claude uninstall
 
 快捷参数：
   -. 或 --here     以当前目录名启动会话     remote-claude -.
                                             remote-claude --here
   等价于: remote-claude start <当前目录名>
+
+远程管理示例：
+  remote-claude attach mywork --remote --host host:8765 --token <token>
+  remote-claude connect host:8765/mywork --token <token>
+  remote-claude token mywork
+  remote-claude regenerate-token mywork
+  remote-claude remote restart <host>
 
 选项：
   --remote    远程连接模式

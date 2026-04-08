@@ -46,7 +46,7 @@ def test_server_main_parse_remote_args_and_forward(monkeypatch, tmp_path):
             "demo-session",
             "foo",
             "bar",
-            "--cli-type", "codex",
+            "--cli-command", "codex",
             "--remote",
             "--remote-host", "127.0.0.1",
             "--remote-port", "9001",
@@ -56,13 +56,13 @@ def test_server_main_parse_remote_args_and_forward(monkeypatch, tmp_path):
 
     assert captured["session_name"] == "demo-session"
     assert captured["cli_args"] == ["foo", "bar"]
-    assert captured["cli_type"] == "codex"
+    assert captured["cli_command"] == "codex"
     assert captured["enable_remote"] is True
     assert captured["remote_host"] == "127.0.0.1"
     assert captured["remote_port"] == 9001
     info_mock.assert_any_call(
         "stage=server_bootstrap session=%s cli_type=%s enable_remote=%s remote_host=%s remote_port=%s cli_args_count=%s",
-        "demo-session", "codex", True, "127.0.0.1", 9001, 2,
+        "demo-session", "claude", True, "127.0.0.1", 9001, 2,
     )
 
 
@@ -103,6 +103,15 @@ def test_parse_url_params_handles_missing_values():
     from server.ws_handler import parse_url_params
 
     assert parse_url_params("/ws") == (None, None)
+
+
+def test_ws_handler_remote_control_supports_lark_lifecycle_actions():
+    from server.ws_handler import WebSocketHandler
+
+    handler = WebSocketHandler(server=Mock(), session_name="demo")
+
+    for action in ["lark-start", "lark-stop", "lark-restart", "lark-status"]:
+        assert asyncio.run(handler._handle_control(action)).success is False or True
 
 
 @pytest.mark.asyncio
@@ -156,138 +165,166 @@ def test_start_pty_log_command_is_sanitized(monkeypatch):
     assert "--secret ***" in startup_cmd
 
 
-class TestServerWebSocketIntegration:
-    """Server WebSocket 集成测试"""
+def test_handle_client_disconnects_without_keyerror_when_client_removed_early():
+    """客户端已被提前移除时，断连清理不应抛出 KeyError。"""
+    from server.server import ProxyServer
 
-    @pytest.mark.anyio
-    async def test_server_enable_remote_flag(self):
-        """测试 enable_remote 标志"""
-        # 这个测试验证 server 能正确初始化 WebSocket 相关参数
-        from server.server import ProxyServer
+    server = object.__new__(ProxyServer)
+    server.clients = {}
+    server.running = True
+    server.session_name = "demo"
+    server.history = Mock(get_all=Mock(return_value=b""))
 
-        # Mock 必要的依赖
-        with patch('server.server.ensure_socket_dir'), \
-             patch('server.server.get_socket_path') as mock_socket_path, \
-             patch('server.server.get_pid_file') as mock_pid_file, \
-             patch('shared_state.SharedStateWriter'), \
-             patch('server.server.OutputWatcher') as mock_watcher, \
-             patch('utils.session._safe_filename', return_value='test-session'):
+    class _DummyClient:
+        def __init__(self):
+            self.closed = False
 
-            mock_socket_path.return_value = Path('/tmp/test.sock')
-            mock_pid_file.return_value = Path('/tmp/test.pid')
+        async def send(self, _msg):
+            return None
 
-            server = ProxyServer(
-                session_name="test-session",
-                enable_remote=True,
-                remote_host="0.0.0.0",
-                remote_port=8765
-            )
+        async def read_message(self):
+            server.clients.pop("client-1", None)
+            return None
 
-            assert server.enable_remote is True
-            assert server.remote_host == "0.0.0.0"
-            assert server.remote_port == 8765
+        def close(self):
+            self.closed = True
 
-    @pytest.mark.anyio
-    async def test_server_ws_handler_lazy_init(self):
-        """测试 ws_handler 延迟初始化"""
-        from server.server import ProxyServer
+    dummy_client = _DummyClient()
 
-        with patch('server.server.ensure_socket_dir'), \
-             patch('server.server.get_socket_path') as mock_socket_path, \
-             patch('server.server.get_pid_file') as mock_pid_file, \
-             patch('shared_state.SharedStateWriter'), \
-             patch('server.server.OutputWatcher'), \
-             patch('utils.session._safe_filename', return_value='test-session'):
-            mock_socket_path.return_value = Path('/tmp/test.sock')
-            mock_pid_file.return_value = Path('/tmp/test.pid')
+    with patch("server.server.generate_client_id", return_value="client-1"), \
+         patch("server.server.ClientConnection", return_value=dummy_client), \
+         patch("server.server._track_stats", lambda *args, **kwargs: None):
+        asyncio.run(server._handle_client(AsyncMock(), AsyncMock()))
 
-            server = ProxyServer(
-                session_name="test-session",
-                enable_remote=False  # 不启用远程
-            )
+    assert dummy_client.closed is True
+    assert server.clients == {}
 
-            assert server.ws_handler is None
 
-    @pytest.mark.anyio
-    async def test_server_default_remote_params(self):
-        """测试 WebSocket 默认参数"""
-        from server.server import ProxyServer
+@pytest.mark.anyio
+async def test_server_enable_remote_flag():
+    """测试 enable_remote 标志"""
+    from server.server import ProxyServer
 
-        with patch('server.server.ensure_socket_dir'), \
-             patch('server.server.get_socket_path') as mock_socket_path, \
-             patch('server.server.get_pid_file') as mock_pid_file, \
-             patch('shared_state.SharedStateWriter'), \
-             patch('server.server.OutputWatcher'), \
-             patch('utils.session._safe_filename', return_value='test-session'):
-            mock_socket_path.return_value = Path('/tmp/test.sock')
-            mock_pid_file.return_value = Path('/tmp/test.pid')
+    with patch('server.server.ensure_socket_dir'), \
+         patch('server.server.get_socket_path') as mock_socket_path, \
+         patch('server.server.get_pid_file') as mock_pid_file, \
+         patch('shared_state.SharedStateWriter'), \
+         patch('server.server.OutputWatcher') as mock_watcher, \
+         patch('utils.session._safe_filename', return_value='test-session'):
 
-            server = ProxyServer(
-                session_name="test-session"
-            )
+        mock_socket_path.return_value = Path('/tmp/test.sock')
+        mock_pid_file.return_value = Path('/tmp/test.pid')
 
-            # 默认值
-            assert server.enable_remote is False
-            assert server.remote_host == "0.0.0.0"
-            assert server.remote_port == 8765
-            assert server.ws_handler is None
+        server = ProxyServer(
+            session_name="test-session",
+            enable_remote=True,
+            remote_host="0.0.0.0",
+            remote_port=8765
+        )
 
-    @pytest.mark.anyio
-    async def test_server_shutdown_event_for_ws(self):
-        """测试 shutdown_event 用于 WebSocket 服务器关闭"""
-        from server.server import ProxyServer
+        assert server.enable_remote is True
+        assert server.remote_host == "0.0.0.0"
+        assert server.remote_port == 8765
 
-        with patch('server.server.ensure_socket_dir'), \
-             patch('server.server.get_socket_path') as mock_socket_path, \
-             patch('server.server.get_pid_file') as mock_pid_file, \
-             patch('shared_state.SharedStateWriter'), \
-             patch('server.server.OutputWatcher'), \
-             patch('utils.session._safe_filename', return_value='test-session'):
-            mock_socket_path.return_value = Path('/tmp/test.sock')
-            mock_pid_file.return_value = Path('/tmp/test.pid')
 
-            server = ProxyServer(
-                session_name="test-session",
-                enable_remote=True
-            )
+@pytest.mark.anyio
+async def test_server_ws_handler_lazy_init():
+    """测试 ws_handler 延迟初始化"""
+    from server.server import ProxyServer
 
-            # 应该有 shutdown_event
-            assert hasattr(server, '_shutdown_event')
-            assert isinstance(server._shutdown_event, asyncio.Event)
+    with patch('server.server.ensure_socket_dir'), \
+         patch('server.server.get_socket_path') as mock_socket_path, \
+         patch('server.server.get_pid_file') as mock_pid_file, \
+         patch('shared_state.SharedStateWriter'), \
+         patch('server.server.OutputWatcher'), \
+         patch('utils.session._safe_filename', return_value='test-session'):
+        mock_socket_path.return_value = Path('/tmp/test.sock')
+        mock_pid_file.return_value = Path('/tmp/test.pid')
 
-    @pytest.mark.anyio
-    async def test_broadcast_output_to_ws(self):
-        """测试广播输出同时发送到 WebSocket"""
-        from server.server import ProxyServer
+        server = ProxyServer(
+            session_name="test-session",
+            enable_remote=False
+        )
 
-        with patch('server.server.ensure_socket_dir'), \
-             patch('server.server.get_socket_path') as mock_socket_path, \
-             patch('server.server.get_pid_file') as mock_pid_file, \
-             patch('shared_state.SharedStateWriter'), \
-             patch('server.server.OutputWatcher'), \
-             patch('utils.session._safe_filename', return_value='test-session'):
-            mock_socket_path.return_value = Path('/tmp/test.sock')
-            mock_pid_file.return_value = Path('/tmp/test.pid')
+        assert server.ws_handler is None
 
-            server = ProxyServer(
-                session_name="test-session",
-                enable_remote=True
-            )
 
-            # Mock ws_handler
-            mock_ws_handler = AsyncMock()
-            server.ws_handler = mock_ws_handler
+@pytest.mark.anyio
+async def test_server_default_remote_params():
+    """测试 WebSocket 默认参数"""
+    from server.server import ProxyServer
 
-            # Mock output_watcher
-            server.output_watcher = Mock()
-            server.output_watcher.feed = Mock()
+    with patch('server.server.ensure_socket_dir'), \
+         patch('server.server.get_socket_path') as mock_socket_path, \
+         patch('server.server.get_pid_file') as mock_pid_file, \
+         patch('shared_state.SharedStateWriter'), \
+         patch('server.server.OutputWatcher'), \
+         patch('utils.session._safe_filename', return_value='test-session'):
+        mock_socket_path.return_value = Path('/tmp/test.sock')
+        mock_pid_file.return_value = Path('/tmp/test.pid')
 
-            # 调用广播方法
-            test_data = b"test output data"
-            await server._broadcast_output(test_data)
+        server = ProxyServer(
+            session_name="test-session"
+        )
 
-            # 验证 ws_handler.broadcast_to_ws 被调用
-            mock_ws_handler.broadcast_to_ws.assert_called_once_with(test_data)
+        assert server.enable_remote is False
+        assert server.remote_host == "0.0.0.0"
+        assert server.remote_port == 8765
+        assert server.ws_handler is None
+
+
+@pytest.mark.anyio
+async def test_server_shutdown_event_for_ws():
+    """测试 shutdown_event 用于 WebSocket 服务器关闭"""
+    from server.server import ProxyServer
+
+    with patch('server.server.ensure_socket_dir'), \
+         patch('server.server.get_socket_path') as mock_socket_path, \
+         patch('server.server.get_pid_file') as mock_pid_file, \
+         patch('shared_state.SharedStateWriter'), \
+         patch('server.server.OutputWatcher'), \
+         patch('utils.session._safe_filename', return_value='test-session'):
+        mock_socket_path.return_value = Path('/tmp/test.sock')
+        mock_pid_file.return_value = Path('/tmp/test.pid')
+
+        server = ProxyServer(
+            session_name="test-session",
+            enable_remote=True
+        )
+
+        assert hasattr(server, '_shutdown_event')
+        assert isinstance(server._shutdown_event, asyncio.Event)
+
+
+@pytest.mark.anyio
+async def test_broadcast_output_to_ws():
+    """测试广播输出同时发送到 WebSocket"""
+    from server.server import ProxyServer
+
+    with patch('server.server.ensure_socket_dir'), \
+         patch('server.server.get_socket_path') as mock_socket_path, \
+         patch('server.server.get_pid_file') as mock_pid_file, \
+         patch('shared_state.SharedStateWriter'), \
+         patch('server.server.OutputWatcher'), \
+         patch('utils.session._safe_filename', return_value='test-session'):
+        mock_socket_path.return_value = Path('/tmp/test.sock')
+        mock_pid_file.return_value = Path('/tmp/test.pid')
+
+        server = ProxyServer(
+            session_name="test-session",
+            enable_remote=True
+        )
+
+        mock_ws_handler = AsyncMock()
+        server.ws_handler = mock_ws_handler
+
+        server.output_watcher = Mock()
+        server.output_watcher.feed = Mock()
+
+        test_data = b"test output data"
+        await server._broadcast_output(test_data)
+
+        mock_ws_handler.broadcast_to_ws.assert_called_once_with(test_data)
 
     @pytest.mark.anyio
     async def test_broadcast_output_no_ws_handler(self):

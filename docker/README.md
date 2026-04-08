@@ -18,29 +18,41 @@ docker/
 
 ### 构建镜像
 
+使用 BuildKit 加速构建（推荐）：
+
 ```bash
+# 启用 BuildKit（Linux/macOS）
+export DOCKER_BUILDKIT=1
+
+# 构建镜像（使用缓存）
 docker-compose -f docker/docker-compose.test.yml build
+
+# 或使用 docker buildx 获得更好的缓存性能
+docker buildx build --cache-to type=local,dest=.docker-cache --cache-from type=local,src=.docker-cache -f docker/Dockerfile.test -t remote-claude-npm-test .
 ```
 
 ### 运行测试
 
-**CI 模式（推荐）：**
+当修改 npm 打包、安装脚本、shell 入口、启动链路或 Docker 逻辑时，优先运行：
 
 ```bash
-KEEP_CONTAINER_ALIVE=0 docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
+docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
 ```
 
-成功后容器自动退出，失败时也不会在脚本内部驻留。
+这是当前推荐的终态回归方式：容器执行完成后自动退出，测试报告与安装产物保留在挂载出的 `test-results/` 目录中。
 
-**本地调试模式：**
+如需进入容器排障，可改为不带 `--rm` 运行，或直接启动交互 shell：
 
 ```bash
 docker-compose -f docker/docker-compose.test.yml run npm-test /project/docker/scripts/docker-test.sh
+docker-compose -f docker/docker-compose.test.yml run npm-test /bin/bash
 ```
 
-默认 `KEEP_CONTAINER_ALIVE=1`，脚本执行完成后容器保持运行，便于查看测试产物。
+### 环境清理
 
-**交互式运行（直接进入 bash）：**
+```bash
+docker-compose -f docker/docker-compose.test.yml down --remove-orphans
+```
 
 ### 查看结果
 
@@ -49,32 +61,97 @@ ls -lh test-results/
 cat test-results/test_report.md
 ```
 
+## 宿主机使用 Docker 产物安装
+
+Docker 测试完成后，`test-results/` 目录包含完整的安装产物，可直接在宿主机上使用：
+
+### 产物说明
+
+```
+test-results/
+├── npm-install/                 # npm 安装目录
+│   ├── .venv/                   # Python 虚拟环境（便携式）
+│   └── node_modules/
+│       └── remote-claude/       # 完整项目代码
+│           └── bin/             # 可执行脚本（remote-claude, cla, cl, cx, cdx）
+├── test_report.md               # 测试报告
+└── version.txt                  # 版本号
+```
+
+### 宿主机快速使用
+
+```bash
+# 方式一：直接运行快捷命令（推荐）
+cd test-results/npm-install/node_modules/remote-claude
+./bin/cla  # 启动 Claude 会话
+
+# 方式二：使用公开入口查看帮助
+cd test-results/npm-install/node_modules/remote-claude
+./bin/remote-claude --help
+
+# 方式三：激活虚拟环境后使用（传统方式）
+source test-results/npm-install/node_modules/remote-claude/.venv/bin/activate
+remote-claude --help
+```
+
+### 可执行脚本
+
+`bin/` 目录下提供公开 CLI 主入口和常用快捷命令：
+
+| 脚本 | 说明 |
+|------|------|
+| `remote-claude` | 公开 CLI 主入口 |
+| `cla` | 启动 Claude 会话 |
+| `cl` | 快速启动 Claude 会话（跳过权限确认） |
+| `cx` | 快速启动 Codex 会话（跳过权限确认） |
+| `cdx` | 启动 Codex 会话 |
+
+### 前置要求
+
+宿主机使用 Docker 产物需要：
+
+1. **必需工具**：tmux、git
+2. **CLI 工具**：Claude CLI 或 Codex CLI（至少一个）
+3. **可选**：飞书企业自建应用（用于飞书客户端）
+
+**指定启动器示例：**
+
+```bash
+remote-claude start demo --launcher Codex
+```
+
+> **注意**：产物中已包含便携式 Python 虚拟环境（`.venv`），宿主机无需预装 Python。
+
+### 验证安装
+
+```bash
+# 验证 Python 环境
+test-results/npm-install/node_modules/remote-claude/.venv/bin/python3 --version
+
+# 验证依赖
+test-results/npm-install/node_modules/remote-claude/.venv/bin/python3 -c "import lark_oapi; print('✓ 依赖完整')"
+
+# 验证命令可用
+test-results/npm-install/node_modules/remote-claude/bin/cla --help
+test-results/npm-install/node_modules/remote-claude/bin/remote-claude --help
+```
+
 ## 测试流程
 
-Docker 测试模拟真实用户从 npm 安装 remote-claude 的完整流程：
+Docker 测试模拟真实用户从 npm 安装 remote-claude 的当前终态流程：
 
-1. **环境检查** - 验证 Python、uv、tmux、npm、Claude CLI
+1. **环境检查** - 验证 Python、uv、tmux、npm、Claude CLI、Codex CLI
 2. **打包 npm 包** - 执行 `npm pack` 生成 `.tgz` 文件
 3. **模拟用户安装** - 在临时目录执行 `npm install <packaged_file>`
-4. **验证 postinstall** - 检查 .venv、pyproject.toml、Python 依赖
-5. **测试 env 配置与启动行为** - 验证 `check-env.sh` 非阻塞、`lark start`/`remote-claude start` 启动链路
-6. **测试基本命令** - 验证 `remote-claude --help`、`remote-claude list`、`cla` 脚本
-7. **执行单元测试** - 运行独立单元测试（不需要活跃会话）
-8. **文件完整性检查** - 验证当前打包产物中的关键入口与模板文件存在
+4. **验证 postinstall** - 检查 `.venv`、`pyproject.toml`、Python 依赖
+5. **会话启动验证** - 验证 `remote-claude start` 与 `remote-claude start --launcher Codex` 能创建 socket，且会话可被 `remote-claude list` 看到
+6. **测试基本命令** - 验证主入口、列表命令、快捷脚本语法与关键行为
+7. **文件完整性检查** - 验证关键文件（含 `resources/defaults/` 模板文件）是否存在
+8. **验证卸载钩子** - 验证 uninstall hook 可在非交互模式下执行
 9. **生成测试报告** - 汇总测试结果，生成 Markdown 报告
-10. **清理** - 停止会话、清理 socket 文件、清理 npm 缓存
+10. **清理** - 测试脚本结束后直接退出容器；如需保留容器调试，请改用不带 `--rm` 的运行方式
 
-## 独立单元测试
-
-以下单元测试不需要活跃的会话：
-
-- `test_format_unit.py` - 格式化逻辑单元测试
-- `test_stream_poller.py` - 流式卡片模型测试
-- `test_renderer.py` - 终端渲染器测试
-- `test_output_clean.py` - 输出清理器测试
-- `lark_client/test_mock_output.py` - 飞书客户端输出模拟测试
-- `lark_client/test_cjk_width.py` - CJK 字符宽度测试
-- `lark_client/test_full_simulation.py` - 完整模拟测试
+步骤 5、6、7、8 会继续执行并写入最终报告；但任一步骤失败时，脚本最终仍会以非零状态退出，便于 CI 正确判定失败。
 
 ## 调试失败
 
@@ -91,105 +168,17 @@ cd /project
 /project/docker/scripts/docker-test.sh
 ```
 
-### 手动执行失败的测试
-
-```bash
-cd /home/testuser/test-npm-install/node_modules/remote-claude
-python3 tests/test_format_unit.py
-```
-
 ### 收集诊断信息
 
 ```bash
 /project/docker/scripts/docker-diagnose.sh
 ```
 
-诊断信息将保存到 `/home/testuser/test-results/diagnosis/` 目录。
+诊断脚本通常会收集以下信息，具体内容可能随排障需求调整：
 
-## 清理
-
-```bash
-# 停止并删除容器
-docker-compose -f docker/docker-compose.test.yml down
-
-# 删除镜像
-docker rmi remote-claude-npm-test
-
-# 删除测试结果
-rm -rf test-results
-```
-
-## CI/CD 集成
-
-在 GitHub Actions 或其他 CI/CD 平台中集成：
-
-```yaml
-- name: Run Docker Tests
-  run: |
-    docker-compose -f docker/docker-compose.test.yml build
-    docker-compose -f docker/docker-compose.test.yml run --rm npm-test
-
-- name: Upload Test Results
-  if: always()
-  uses: actions/upload-artifact@v3
-  with:
-    name: test-results
-    path: test-results/
-```
-
-## 设计决策
-
-### 为什么选择 Debian slim 而非 Alpine？
-
-- Alpine 缺少 PTY 所需的系统库，需要额外构建
-- tmux 在 Alpine 上编译复杂
-- Debian slim 稳定且体积可控
-
-### 为什么保留 Codex CLI？
-
-- 项目支持 Claude/Codex 双入口
-- Docker 回归需要覆盖 Codex 安装可用性
-- 避免 npm 包发布后出现入口缺失
-
-### 为什么使用非 root 用户？
-
-- 模拟真实用户安装场景
-- 避免权限问题导致的假阳性测试
-
-## 文件说明
-
-- `Dockerfile.test` - 定义 Docker 测试镜像，包含所有必要的依赖
-- `docker-compose.test.yml` - Docker Compose 配置，挂载项目代码和测试结果目录
-- `docker-test.sh` - 主测试脚本，执行完整的测试流程
-- `docker-diagnose.sh` - 诊断脚本，测试失败时收集诊断信息
-- `test-results/` - 测试结果输出目录（包含测试报告和日志）
-
-## 常见问题
-
-### 测试失败但本地成功？
-
-Docker 环境可能与本地环境不同。检查：
-
-1. Docker 镜像中的依赖版本是否满足要求
-2. 文件权限是否正确
-3. 环境变量是否正确设置
-
-### npm install 失败？
-
-查看日志：
-
-```bash
-cat test-results/npm_install.log
-```
-
-### 单元测试失败？
-
-查看具体的测试日志：
-
-```bash
-cat test-results/test_format_unit.log
-```
-
-## 联系支持
-
-如遇问题，请将 `/home/testuser/test-results/` 目录或 `diagnosis.tar.gz` 打包并发送给开发者。
+- 系统与依赖版本
+- npm / Python 安装信息
+- 安装后目录结构
+- `remote-claude list` 输出
+- socket / tmux / startup log 状态
+- `test-results/` 下的日志与错误摘要

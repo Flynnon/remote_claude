@@ -25,7 +25,7 @@ pnpm add -g remote-claude
 curl -fsSL https://raw.githubusercontent.com/yyzybb537/remote_claude/main/scripts/install.sh | bash
 ```
 
-首次运行时自动完成环境初始化：uv 安装、Python 虚拟环境创建、依赖安装。
+首次运行时自动完成环境初始化：uv 安装、Python 虚拟环境创建、依赖安装。公开入口统一是 shell launcher（如 `bin/remote-claude`、`bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx`），项目 `.venv` 仅作内部运行时，不会加入用户 PATH。
 
 ### 启动
 
@@ -49,18 +49,27 @@ remote-claude start demo
 remote-claude attach demo
 ```
 
-### 从其他终端连接与清理
+### 会话管理与远程连接
+
+`remote-claude` 既是本地会话管理主入口，也是远程连接主入口；远程连接统一通过 `start --remote` 暴露会话，再用 `attach --remote`、`connect`、`token`、`regenerate-token`、`remote` 完成接入与管理。`cla`、`cl`、`cx`、`cdx` 仅用于本地快捷启动，不承担远程管理职责。
 
 ```bash
-remote-claude list              # 查看所有会话
-remote-claude attach <会话名>   # 连接现有会话
-remote-claude uninstall         # 清理本地数据并提示 npm/pnpm 卸载命令
-remote-claude uninstall --yes   # 跳过确认，直接执行清理
+remote-claude list                              # 查看所有会话
+remote-claude status <会话名>                   # 查看会话状态
+remote-claude kill <会话名>                     # 终止会话
+remote-claude start <会话名> --remote          # 启动会话并开启远程连接
+remote-claude attach <会话名> --remote --host host:8765 --token <TOKEN>  # 标准远程 attach
+remote-claude connect host:8765/<会话名> --token <TOKEN>                 # 直接连接远程会话
+remote-claude token <会话名>                   # 查看会话 token
+remote-claude regenerate-token <会话名>        # 刷新会话 token
+remote-claude remote restart host:8765/<会话名> --token <TOKEN>          # 远程控制会话
+remote-claude uninstall                         # 清理本地数据并提示 npm/pnpm 卸载命令
+remote-claude uninstall --yes                   # 跳过确认，直接执行清理
 ```
 
 ## 飞书客户端
 
-配置飞书机器人后，可在飞书中远程操作：
+配置飞书机器人后，可在飞书中远程操作；飞书侧负责卡片展示与交互，ANSI 解析与输出整理由服务端输出链路负责。
 
 ```bash
 remote-claude lark start   # 启动飞书客户端
@@ -68,7 +77,7 @@ remote-claude lark stop    # 停止
 remote-claude lark status  # 查看状态
 ```
 
-飞书机器人配置详见 [docs/feishu-setup.md](docs/feishu-setup.md)。
+飞书内常用命令包括 `/attach`、`/detach`、`/list`、`/status`、`/start`、`/kill`、`/ls`、`/tree`、`/new-group`、`/help`、`/menu`、`/cl ...`。完整说明见 [docs/feishu-client.md](docs/feishu-client.md) 与 [docs/feishu-setup.md](docs/feishu-setup.md)。
 
 ## 更多文档
 
