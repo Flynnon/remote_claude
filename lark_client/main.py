@@ -394,6 +394,13 @@ def handle_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerRespons
         return P2CardActionTriggerResponse()
 
 
+def _mark_lark_ready() -> None:
+    from utils.session import ensure_socket_dir, get_lark_ready_file
+
+    ensure_socket_dir()
+    get_lark_ready_file().write_text("ready", encoding="utf-8")
+
+
 class LarkBot:
     """飞书机器人"""
 
@@ -452,6 +459,7 @@ class LarkBot:
                 print("  如连接失败，可在 .env 中设置 LARK_NO_PROXY=1 绕过代理")
 
         self.running = True
+        _mark_lark_ready()
         print("\n机器人已启动，等待消息...")
         print("在飞书中发送 /help 查看使用说明\n")
 

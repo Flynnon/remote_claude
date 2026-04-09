@@ -40,6 +40,7 @@ def _session_api():
         tmux_kill_session,
         list_active_sessions, is_session_active, cleanup_session,
         is_lark_running, get_lark_pid, get_lark_status, get_lark_pid_file,
+        get_lark_status_file, get_lark_ready_file,
         save_lark_status, cleanup_lark,
         USER_DATA_DIR, ensure_user_data_dir,
         get_env_snapshot_path,
@@ -57,6 +58,8 @@ def _session_api():
         "get_lark_pid"         : get_lark_pid,
         "get_lark_status"      : get_lark_status,
         "get_lark_pid_file"    : get_lark_pid_file,
+        "get_lark_status_file" : get_lark_status_file,
+        "get_lark_ready_file"  : get_lark_ready_file,
         "save_lark_status"     : save_lark_status,
         "cleanup_lark"         : cleanup_lark,
         "USER_DATA_DIR"        : USER_DATA_DIR,
@@ -133,6 +136,14 @@ def get_lark_pid_file():
     return _session_api()["get_lark_pid_file"]()
 
 
+def get_lark_status_file():
+    return _session_api()["get_lark_status_file"]()
+
+
+def get_lark_ready_file():
+    return _session_api()["get_lark_ready_file"]()
+
+
 def save_lark_status(*args, **kwargs):
     return _session_api()["save_lark_status"](*args, **kwargs)
 
@@ -156,6 +167,65 @@ def _mask_token(token: str) -> str:
     if len(token) <= 4:
         return "*" * len(token)
     return f"{token[:2]}***{token[-2:]}"
+
+
+def _is_noninteractive_mode() -> bool:
+    return os.getenv("REMOTE_CLAUDE_NONINTERACTIVE", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _get_lark_startup_timeout() -> float:
+    try:
+        value = float(os.getenv("REMOTE_CLAUDE_LARK_STARTUP_TIMEOUT", "8"))
+    except ValueError:
+        value = 8.0
+    return max(0.0, value)
+
+
+def _terminate_lark_process(process, timeout: float = 5) -> None:
+    if process.poll() is not None:
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            process.terminate()
+        except Exception:
+            return
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return
+        time.sleep(0.1)
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            process.kill()
+        except Exception:
+            return
+
+
+def _wait_for_lark_ready(process, ready_file: Path, timeout: float) -> tuple[bool, str]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if ready_file.exists():
+            return True, "ready"
+        if process.poll() is not None:
+            return False, "exited"
+        time.sleep(0.1)
+
+    if ready_file.exists():
+        return True, "ready"
+    if process.poll() is not None:
+        return False, "exited"
+    return False, "timeout"
 
 
 def _log_remote_args(command: str, host: str, port: int, session: str, token: str) -> None:
@@ -255,6 +325,18 @@ def _detect_hard_startup_failure(log_lines: list[str]) -> str:
         "can't find",
         "not recognized as an internal or external command",
         "exited with status 127",
+        "invalid app credential",
+        "app_access_token is invalid",
+        "app_secret is invalid",
+        "tenant_access_token",
+        "websocket connection closed",
+        "handshake status",
+        "failed to connect",
+        "connection refused",
+        "timeouterror",
+        "错误:",
+        "exception",
+        "traceback",
     )
 
     for line in log_lines:
@@ -969,7 +1051,7 @@ def cmd_lark_start(args):
     from utils.runtime_config import check_stale_backup, prompt_backup_action, cleanup_backup_files
     bak_file = check_stale_backup()
     if bak_file:
-        action = prompt_backup_action(bak_file)
+        action = 'skip' if _is_noninteractive_mode() else prompt_backup_action(bak_file)
         if action == 'overwrite':
             # 从 bak 恢复
             print("正在从备份恢复配置...")
@@ -999,6 +1081,8 @@ def cmd_lark_start(args):
 
     # 启动守护进程（使用 -m 模块方式运行，确保相对导入正常工作）
     log_file = _get_role_log_path("lark")
+    ready_file = get_lark_ready_file()
+    ready_file.unlink(missing_ok=True)
 
     try:
         # 启动进程
@@ -1015,21 +1099,32 @@ def cmd_lark_start(args):
         get_lark_pid_file().write_text(str(pid))
         save_lark_status(pid)
 
-        # 等待一下确认启动成功
-        time.sleep(1)
-
-        if is_lark_running():
+        ready, reason = _wait_for_lark_ready(process, ready_file, _get_lark_startup_timeout())
+        if ready:
             print(f"✓ 飞书客户端已启动")
             print(f"  PID: {pid}")
             print(f"  日志: {log_file}")
             print(f"\n使用 'remote-claude lark status' 查看状态")
             print(f"使用 'remote-claude lark stop' 停止")
             return 0
-        else:
-            print("✗ 启动失败，请查看日志:")
+
+        recent_log_lines = _read_recent_start_log_lines(log_file)
+        hard_failure = _detect_hard_startup_failure(recent_log_lines)
+
+        if reason == "exited":
+            print("✗ 启动失败，飞书客户端已退出，请查看日志:")
             print(f"  tail -f {log_file}")
-            cleanup_lark()
-            return 1
+        elif hard_failure:
+            print("✗ 启动失败，飞书客户端初始化异常:")
+            print(f"  {hard_failure}")
+            print(f"  日志: {log_file}")
+            _terminate_lark_process(process)
+        else:
+            print("✗ 启动超时，飞书客户端未在预期时间内完成初始化，请查看日志:")
+            print(f"  tail -f {log_file}")
+            _terminate_lark_process(process)
+        cleanup_lark()
+        return 1
 
     except Exception as e:
         print(f"✗ 启动失败: {e}")

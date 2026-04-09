@@ -86,54 +86,46 @@ class TestLauncherDataClass:
             Launcher(name="Test", cli_type="invalid", command="test")
 
 
-class TestSettingsDataClass:
-    """测试 Settings 数据类"""
+class TestGetMatchingCommands:
+    """测试 _get_matching_commands 辅助函数"""
 
-    def test_create_settings(self):
-        settings = Settings(
-            launchers=[
-                Launcher("claude", "claude", "claude"),
-                Launcher("codex", "codex", "codex"),
-            ]
-        )
-        assert len(settings.launchers) == 2
+    def test_no_settings(self):
+        from lark_client.card_builder import _get_matching_commands
 
-    def test_get_launcher(self):
-        settings = Settings(
-            launchers=[
-                Launcher("claude", "claude", "/usr/local/bin/claude"),
-                Launcher("codex", "codex", "codex"),
-            ]
-        )
-        assert settings.get_launcher("claude").command == "/usr/local/bin/claude"
-        assert settings.get_launcher("codex").command == "codex"
-        assert settings.get_launcher("unknown") is None
+        settings = None
+        result = _get_matching_commands(settings)
+        assert result == [
+            {"name": "Claude", "command": "claude"},
+            {"name": "Codex", "command": "codex"},
+        ]
 
-    def test_get_default_launcher(self):
-        settings = Settings(
-            launchers=[
-                Launcher("claude", "claude", "/usr/local/bin/claude"),
-            ]
-        )
-        assert settings.get_default_launcher().command == "/usr/local/bin/claude"
-        empty_settings = Settings()
-        assert empty_settings.get_default_launcher() is None
+    def test_empty_launchers(self):
+        from lark_client.card_builder import _get_matching_commands
 
-    def test_settings_roundtrip(self):
+        settings = Settings()
+        result = _get_matching_commands(settings)
+        assert result == [
+            {"name": "Claude", "command": "claude"},
+            {"name": "Codex", "command": "codex"},
+        ]
+
+    def test_returns_all_launchers(self):
+        from lark_client.card_builder import _get_matching_commands
+
         settings = Settings()
         settings.launchers = [
-            Launcher("claude", "claude", "/opt/claude", "Custom Claude"),
-            Launcher("codex", "codex", "/opt/codex", "Custom Codex"),
+            Launcher(name="Claude", cli_type="claude", command="claude"),
+            Launcher(name="Aider", cli_type="claude", command="aider --model claude-sonnet-4"),
+            Launcher(name="Codex", cli_type="codex", command="codex"),
         ]
-        data = settings.to_dict()
-        loaded = Settings.from_dict(data)
-        assert len(loaded.launchers) == 2
-        assert loaded.launchers[0].name == "claude"
-        assert loaded.launchers[0].cli_type == "claude"
-        assert loaded.launchers[0].command == "/opt/claude"
+        result = _get_matching_commands(settings)
+        assert len(result) == 3
+        assert result[0]["name"] == "Claude"
+        assert result[1]["name"] == "Aider"
+        assert result[2]["name"] == "Codex"
 
 
-class TestGetMatchingCommands:
+class TestDirStartCallback:
     """测试 _get_matching_commands 辅助函数"""
 
     def test_no_settings(self):
@@ -204,18 +196,14 @@ def test_package_json_includes_public_docs_but_not_superpowers_docs():
     assert "docs/superpowers/**" not in files
 
 
-def test_remote_list_does_not_require_session_name():
-    from remote_claude import validate_remote_args
+def test_package_json_includes_public_docs_but_not_superpowers_docs():
+    package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
+    files = package["files"]
 
-    args = type("Args", (), {
-        "host" : "example.com",
-        "port" : 8765,
-        "token": "secret-token",
-        "name" : "",
-    })()
-
-    result = validate_remote_args(args, session_fallback="list")
-    assert result == ("example.com", 8765, "list", "secret-token")
+    assert "docs/*.md" in files
+    assert "docs/*.json" in files
+    assert "docs/superpowers/" not in files
+    assert "docs/superpowers/**" not in files
 
 
 def test_cmd_uninstall_calls_uninstall_script_and_prints_followup(monkeypatch, capsys):

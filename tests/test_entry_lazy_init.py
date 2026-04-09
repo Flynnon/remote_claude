@@ -1560,17 +1560,13 @@ def test_common_shortcut_helper_declares_launcher_and_permission_vars():
     assert "REMOTE_CLAUDE_SHORTCUT_PERMISSION_ARGS" in content
 
 
-def test_docker_test_script_checks_shared_shortcut_entry_instead_of_inline_lark_start():
+def test_docker_test_script_keeps_expected_shortcut_regressions_only():
     content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
     assert 'grep -q "_remote_claude_shortcut_help_or_main" "$install_dir/../bin/cla"' in content
     assert 'grep -q "lark start" "$install_dir/../bin/cla"' not in content
-
-
-def test_docker_test_script_no_longer_uses_legacy_claude_command_as_failure_signal():
-    content = (REPO_ROOT / "docker" / "scripts" / "docker-test.sh").read_text(encoding="utf-8")
-    assert 'start_legacy_claude_command.log' in content
-    assert '旧 CLAUDE_COMMAND 配置未影响当前 launcher 启动链路' in content
-    assert '负面测试：CLAUDE_COMMAND=claudeyy 应导致 start 在 20s 内失败退出' not in content
+    assert 'start_legacy_claude_command.log' not in content
+    assert '旧 CLAUDE_COMMAND 配置未影响当前 launcher 启动链路' not in content
+    assert 'CLAUDE_COMMAND=claudeyy' not in content
 
 
 def test_setup_runtime_creation_stays_in_success_flow():
@@ -1831,7 +1827,7 @@ def test_completion_prefers_remote_command_path_when_sourced_from_cache(tmp_path
     assert result.returncode == 0, result.stderr
 
 
-def test_scripts_use_sh_shebang_for_all_shell_scripts():
+def test_shell_script_portability_guards():
     for rel in [
         "scripts/completion.sh",
         "scripts/npm-publish.sh",
@@ -1840,8 +1836,6 @@ def test_scripts_use_sh_shebang_for_all_shell_scripts():
         first = (REPO_ROOT / rel).read_text(encoding="utf-8").splitlines()[0]
         assert first.strip() == "#!/bin/sh"
 
-
-def test_shell_scripts_do_not_contain_bash_only_constructs():
     for rel in [
         "scripts/completion.sh",
         "scripts/npm-publish.sh",
@@ -1854,8 +1848,6 @@ def test_shell_scripts_do_not_contain_bash_only_constructs():
         assert "[[" not in text
         assert "#!/bin/bash" not in text
 
-
-def test_scripts_no_explicit_bash_invocation_for_internal_calls():
     for rel in [
         "scripts/_common.sh",
         "scripts/setup.sh",
@@ -1866,8 +1858,6 @@ def test_scripts_no_explicit_bash_invocation_for_internal_calls():
         assert 'bash "$SCRIPT_DIR/setup.sh"' not in text
         assert 'bash scripts/' not in text
 
-
-def test_entry_scripts_still_source_common_sh_for_uv_logic():
     for rel in ENTRY_SCRIPTS:
         content = (REPO_ROOT / rel).read_text(encoding="utf-8")
         assert "scripts/_common.sh" in content
@@ -2061,27 +2051,33 @@ def test_check_env_escapes_sed_replacement_values():
     assert 'sed "s/^FEISHU_APP_SECRET=.*/FEISHU_APP_SECRET=$ESCAPED_APP_SECRET/"' in content
 
 
-def test_npm_publish_uses_temp_npmrc_for_token():
+def test_npm_publish_script_safety_guards():
     content = (REPO_ROOT / "scripts" / "npm-publish.sh").read_text(encoding="utf-8")
     assert "NPM_CONFIG_USERCONFIG" in content
     assert "mktemp" in content
     assert "npm config set //registry.npmjs.org/:_authToken" in content
     assert "~/.npmrc" not in content
-
-
-def test_npm_publish_allows_only_package_json_changes_after_version_bump():
-    content = (REPO_ROOT / "scripts" / "npm-publish.sh").read_text(encoding="utf-8")
     assert 'git diff --name-only --cached' in content
     assert 'git diff --name-only' in content
     assert 'grep -v "^package.json$"' in content
 
 
-def test_uninstall_skips_project_venv_cleanup_for_repo_checkout(tmp_path: Path):
+def test_uninstall_script_text_guards():
     content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
     assert 'case "$PROJECT_DIR" in' in content
     assert '*/node_modules/remote-claude|*/.pnpm/*/node_modules/remote-claude)' in content
     assert 'print_detail "跳过源码目录虚拟环境: $PROJECT_DIR/.venv"' in content
     assert 'rm -rf "$PROJECT_DIR/.venv"' in content
+    assert "REMOTE_CLAUDE_LARK_PID_FILE" in content
+    assert "REMOTE_CLAUDE_SOCKET_DIR" in content
+    assert "REMOTE_CLAUDE_STATE_FILE" in content
+    assert "REMOTE_CLAUDE_SETTINGS_FILE" in content
+    assert '"/tmp/remote-claude/lark.pid"' not in content
+    assert 'RUNTIME_DIR="/tmp/remote-claude"' not in content
+    assert 'DATA_DIR="$HOME/.remote-claude"' not in content
+    assert "config.json" not in content
+    assert "runtime.json" not in content
+    assert '"$HOME/Library/pnpm"' in content
 
 
 def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_context(tmp_path: Path):
@@ -2109,8 +2105,12 @@ def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_context(t
     assert "是否删除" not in result.stdout
 
 
-def test_uninstall_uses_centralized_current_file_names_only():
+def test_uninstall_script_text_guards():
     content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+    assert 'case "$PROJECT_DIR" in' in content
+    assert '*/node_modules/remote-claude|*/.pnpm/*/node_modules/remote-claude)' in content
+    assert 'print_detail "跳过源码目录虚拟环境: $PROJECT_DIR/.venv"' in content
+    assert 'rm -rf "$PROJECT_DIR/.venv"' in content
     assert "REMOTE_CLAUDE_LARK_PID_FILE" in content
     assert "REMOTE_CLAUDE_SOCKET_DIR" in content
     assert "REMOTE_CLAUDE_STATE_FILE" in content
@@ -2120,9 +2120,10 @@ def test_uninstall_uses_centralized_current_file_names_only():
     assert 'DATA_DIR="$HOME/.remote-claude"' not in content
     assert "config.json" not in content
     assert "runtime.json" not in content
+    assert '"$HOME/Library/pnpm"' in content
 
 
-def test_uninstall_keeps_manual_prompt_when_only_generic_npm_env_present(tmp_path: Path):
+def test_uninstall_skips_prompt_and_silently_cleans_config_dir_in_pnpm_context(tmp_path: Path):
     data_dir = tmp_path / ".remote-claude"
     data_dir.mkdir()
     (data_dir / "settings.json").write_text("{}", encoding="utf-8")
@@ -2196,12 +2197,6 @@ def test_uninstall_preserves_all_config_files_when_user_declines_cleanup(tmp_pat
     assert (data_dir / ".env").read_text(encoding="utf-8") == 'TOKEN=keep\n'
 
 
-def test_uninstall_scans_pnpm_library_bin_dir_for_shortcuts():
-    content = (REPO_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
-
-    assert '"$HOME/Library/pnpm"' in content
-
-
 def test_uninstall_supports_explicit_noninteractive_mode(tmp_path: Path):
     data_dir = tmp_path / ".remote-claude"
     data_dir.mkdir()
@@ -2225,6 +2220,11 @@ def test_uninstall_supports_explicit_noninteractive_mode(tmp_path: Path):
     assert not data_dir.exists()
     assert "[y/N]" not in result.stdout
     assert "是否删除" not in result.stdout
+
+
+def test_docker_compose_test_service_disables_keep_container_alive_by_default():
+    content = (REPO_ROOT / "docker" / "docker-compose.test.yml").read_text(encoding="utf-8")
+    assert 'KEEP_CONTAINER_ALIVE=0' in content
 
 
 def test_docker_test_script_passes_noninteractive_flag_to_uninstall_hook():

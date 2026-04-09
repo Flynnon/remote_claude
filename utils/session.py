@@ -463,6 +463,11 @@ def get_lark_status_file() -> Path:
     return SOCKET_DIR / "lark.status"
 
 
+def get_lark_ready_file() -> Path:
+    """获取飞书客户端的就绪标记文件路径"""
+    return SOCKET_DIR / "lark.ready"
+
+
 def is_lark_running() -> bool:
     """检查飞书客户端是否正在运行"""
     pid_file = get_lark_pid_file()
@@ -599,6 +604,8 @@ def cleanup_lark():
     """清理飞书客户端残留文件"""
     pid_file = get_lark_pid_file()
     status_file = get_lark_status_file()
+    ready_file = get_lark_ready_file()
 
     pid_file.unlink(missing_ok=True)
     status_file.unlink(missing_ok=True)
+    ready_file.unlink(missing_ok=True)

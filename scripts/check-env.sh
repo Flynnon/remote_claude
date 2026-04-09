@@ -64,6 +64,18 @@ if [ -f "$REMOTE_CLAUDE_ENV_FILE" ]; then
     fi
 fi
 
+case "${REMOTE_CLAUDE_NONINTERACTIVE:-}" in
+    1|true|TRUE|yes|YES)
+        if [ "$ENV_OK" = false ]; then
+            echo ""
+            echo "飞书客户端尚未配置，非交互模式下跳过凭证填写。"
+            echo "如需启用飞书客户端，请先配置 $REMOTE_CLAUDE_ENV_FILE"
+            echo ""
+            return 0 2>/dev/null || exit 0
+        fi
+        ;;
+esac
+
 if [ "$ENV_OK" = false ]; then
     echo ""
     echo "飞书客户端尚未配置，需要填写应用凭证。"

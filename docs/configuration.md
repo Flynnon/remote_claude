@@ -1,6 +1,6 @@
 # 配置说明
 
-Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、卡片展示和行为定制。
+本文档只覆盖配置文件、环境变量与配置重置。命令用法请看 [CLI 参考](cli-reference.md)，飞书接入与远程连接请看对应专题文档。
 
 ## 配置文件位置
 
@@ -11,6 +11,23 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 | `~/.remote-claude/.env` | 环境变量（飞书凭证等） |
 | `~/.remote-claude/remote_connections.json` | 远程连接配置（host、port、token） |
 | `~/.remote-claude/tokens/<session>.json` | 会话 Token（远程模式，权限 0600） |
+
+## 配置放置原则
+
+### 按文件职责
+
+- `settings.json` 保存用户可长期保留的行为配置与默认值。
+- `state.json` 保存运行时状态与可重建数据。
+- `.env` 保存部署环境、外部系统接入和敏感配置入口。
+- `remote_connections.json` 保存远程连接入口信息。
+- `tokens/<session>.json` 保存单会话敏感 token。
+
+### 按生命周期判断
+
+- 需要随默认模板分发、并允许用户长期调整的配置，放 `settings.json`。
+- 只在运行过程中产生、重启后可重新生成的内容，放 `state.json`。
+- 依赖环境注入或不应直接写入通用配置文件的值，放 `.env`。
+- 远程连接与会话令牌保持独立存储，不与通用用户配置混放。
 
 ## 配置文件结构（v1.1）
 
@@ -90,7 +107,7 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
       "继续执行", "继续", "开始执行", "开始", "执行",
       "continue", "确认", "OK"
     ],
-    "auto_answer_vague_prompt": "[系统提示] 请使用工具执行下一步操作。"
+    "auto_answer_vague_prompt": "[系统提示] 请使用工具执行下一步操作。如果不确定下一步，请明确询问需要做什么。不要只返回状态确认。"
   }
 }
 ```
@@ -129,7 +146,6 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 {
   "ui": {
     "show_builtin_keys": true,
-    "show_launchers": ["Claude", "Codex"],
     "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
   }
 }
@@ -138,7 +154,6 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `show_builtin_keys` | boolean | 是否显示内置快捷键 |
-| `show_launchers` | array | 显示在操作面板的启动器名称列表 |
 | `enabled_keys` | array | 启用的快捷键列表 |
 
 ## 环境变量配置
@@ -150,7 +165,7 @@ Remote Claude 使用 JSON 格式的配置文件，支持灵活的会话管理、
 FEISHU_APP_ID=your_app_id
 FEISHU_APP_SECRET=your_app_secret
 
-# === 可选（推荐使用新变量名，旧变量名仍兼容） ===
+# === 可选（默认样例只列主变量名，旧变量名仍兼容） ===
 ENABLE_USER_WHITELIST=false
 ALLOWED_USERS=user1,user2
 GROUP_NAME_PREFIX=【Remote-Claude】
@@ -161,6 +176,8 @@ LARK_NO_PROXY=0
 # 兼容旧变量名：
 # USER_WHITELIST / GROUP_PREFIX / LOG_LEVEL / NO_PROXY
 ```
+
+默认模板只展示当前主变量名；旧变量名（如 `USER_WHITELIST`、`GROUP_PREFIX`、`LOG_LEVEL`、`NO_PROXY`）仅作为兼容读取别名保留。
 
 | 配置项 | 说明 |
 |--------|------|
@@ -216,7 +233,7 @@ remote-claude config reset --state
       "继续执行", "继续", "开始执行", "开始", "执行",
       "continue", "确认", "OK"
     ],
-    "auto_answer_vague_prompt": "[系统提示] 请使用工具执行下一步操作。"
+    "auto_answer_vague_prompt": "[系统提示] 请使用工具执行下一步操作。如果不确定下一步，请明确询问需要做什么。不要只返回状态确认。"
   },
   "notify": {
     "ready": true,
@@ -224,7 +241,6 @@ remote-claude config reset --state
   },
   "ui": {
     "show_builtin_keys": true,
-    "show_launchers": ["Claude", "Codex"],
     "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc"]
   }
 }

@@ -30,7 +30,7 @@ remote-claude lark status
 # 回归测试
 uv run python3 -m pytest tests/test_session_truncate.py tests/test_runtime_config.py tests/test_custom_commands.py tests/test_cli_help_and_remote.py tests/test_startup_trace_logging.py -q
 uv run python3 -m pytest tests/test_entry_lazy_init.py -q
-uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_renderer.py -q
+uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_component_parser.py -q
 uv run python3 -m pytest tests/test_custom_commands.py -q
 uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q
 
@@ -47,6 +47,30 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - `client/base_client.py` 抽象终端客户端共性；本地/远程客户端仅实现传输差异。
 - `lark_client/main.py` 是飞书入口；`lark_client/` 只负责展示流转，**严禁**做字符串修复或 ANSI 清理。
 
+## 配置位置原则
+
+### 按文件职责划分
+
+- `resources/defaults/settings.json.example`：静态默认配置模板，只放用户可长期保留、可预设的默认行为。
+- `resources/defaults/state.json.example`：运行时状态模板，只放程序启动后会被重建或覆盖的状态字段。
+- `resources/defaults/env.example`：环境变量模板，只放部署环境、外部系统接入和敏感配置入口。
+- `~/.remote-claude/remote_connections.json`：远程连接入口配置，独立于通用 settings/state。
+- `~/.remote-claude/tokens/<session>.json`：单会话敏感 token，独立于普通连接配置。
+
+### 按数据生命周期划分
+
+- 用户长期偏好、可随版本分发默认值的配置，放 `settings`。
+- 运行过程自然产生、可重建的数据，放 `state`。
+- 依赖部署环境、凭证、代理、白名单等系统边界输入，放 `.env`。
+- 远程主机连接信息放 `remote_connections.json`，不要混入 `settings`。
+- 会话级敏感令牌放 `tokens/<session>.json`，不要混入公开样例或通用配置文件。
+
+### 文档与样例约束
+
+- 默认样例必须优先反映当前主字段与主路径，兼容旧字段仅在文档中说明，不写入默认模板。
+- 不要把运行时状态塞进 `settings`，也不要把用户偏好写进 `state`。
+- 更新配置文档时，以 `resources/defaults/` 和当前读取逻辑为准，避免 README、AGENTS、配置文档三处语义漂移。
+
 ## 关键约束
 
 - 配置修改必须保持原子性，`utils/runtime_config.py` 的修改型接口使用持锁读改写。
@@ -61,4 +85,4 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - 需已安装 `tmux` 和 `claude` CLI
 - socket 路径：`/tmp/remote-claude/<name>.sock`
 - tmux 会话前缀：`rc-`
-- 详细测试矩阵见 `tests/TEST_PLAN.md`
+- 详细测试矩阵见 `tests/README.md`

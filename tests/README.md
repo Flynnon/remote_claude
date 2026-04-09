@@ -1,26 +1,26 @@
-# TEST_PLAN.md
+# 测试计划与回归入口
 
-本文档聚焦当前有效的测试入口、关键回归项和 Docker 验证流程。
+本文件是 `tests/` 目录的统一入口，集中说明自动化测试分层、推荐回归命令与调试入口。若你正在排查 Docker 安装链路，请同时查看 [`../docker/README.md`](../docker/README.md)。
+
+本文档聚焦当前有效的自动化测试入口、精选专项回归命令，以及 Docker 回归与调试入口。文档定位是“开发者测试导航”，不重复展开 Docker 脚本实现细节。
 
 ## 测试分层
 
-### 层 1：本地回归（无需前置条件）
+### 层 1：本地自动化回归（无需前置条件）
 
-| 类型 | 关注点 | 推荐命令 |
+| 分层 | 关注点 | 推荐命令 |
 |------|--------|---------|
 | 核心配置与命令行 | 会话名、配置迁移、CLI 行为、remote 参数、启动 tracing | `uv run python3 -m pytest tests/test_session_truncate.py tests/test_runtime_config.py tests/test_custom_commands.py tests/test_cli_help_and_remote.py tests/test_startup_trace_logging.py -q` |
 | shell / 安装链路 | lazy init、shell 兼容、安装与入口脚本 | `uv run python3 -m pytest tests/test_entry_lazy_init.py -q` |
-| 飞书渲染与交互 | poller、卡片交互、断连展示、终端清理 | `uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_renderer.py -q` |
+| 飞书渲染与交互 | poller、卡片交互、断连展示、终端解析/清理 | `uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_component_parser.py -q` |
 
-### 层 2：集成测试（需要活跃会话）
+### 层 2：补充自动化测试（按改动范围选跑）
 
 ```bash
-uv run remote-claude start test
-uv run python3 tests/test_integration.py
-uv run remote-claude kill test
+uv run python3 -m pytest tests/test_option_select.py tests/test_codex_option_block.py tests/test_socks_proxy.py -q
 ```
 
-### 层 3：飞书视觉验证（手动）
+### 层 3：手工验证（仅在需要真实环境时）
 
 重点检查：
 - 新会话连接
@@ -58,8 +58,7 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - `check-env.sh` 在 `REMOTE_CLAUDE_REQUIRE_FEISHU=0` 下跳过飞书检查
 - `remote-claude lark start` 在 mock 凭证下不无限阻塞
 - `remote-claude start` 的 Claude / Codex 启动链路
-- 无效 launcher 配置下的失败退出检测
-- 关键单元测试与入口脚本行为回归
+- 关键入口脚本与安装产物行为回归
 
 ### Docker 失败诊断
 
@@ -77,6 +76,8 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - `~/.remote-claude/startup.log` 尾部日志
 - `test-results/` 下的日志与错误摘要
 
+更多 Docker 细节与容器排查正文见 [`../docker/README.md`](../docker/README.md)；[`../docs/docker-test.md`](../docs/docker-test.md) 仅保留跳转入口。
+
 ---
 
 ## 精选专项回归
@@ -90,12 +91,12 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 | 显式跳过飞书配置检查 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required -q` |
 | lazy init 失败信息可见 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details -q` |
 
-### shell 与安装链路
+### shell / 安装链路
 
 | 验证点 | 命令 |
 |--------|------|
 | rc 自适应选择 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_get_shell_rc_prefers_zsh_when_shell_is_zsh -q` |
-| shell 脚本无 bash-only 语法 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_shell_scripts_do_not_contain_bash_only_constructs -q` |
+| shell 可移植性保护（sh shebang / 无 bash-only / 统一走 _common.sh） | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_shell_script_portability_guards -q` |
 | scripts 路径统一 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_scripts_define_project_dir_before_common_source -q` |
 | completion source 稳定 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_completion_script_can_be_sourced_from_random_cwd -q` |
 | 安装失败日志落盘 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_install_sh_initializes_install_log_helpers -q` |

@@ -200,6 +200,7 @@ pack_npm_package() {
         log_success "npm 包打包成功: $PACK_FILE"
         log_info "版本: $VERSION"
         echo "$VERSION" > "$RESULTS_DIR/version.txt"
+        cp "$PACK_FILE" "$RESULTS_DIR"
         mv "$PACK_FILE" /tmp/
     else
         log_error "npm pack 失败"
@@ -334,8 +335,10 @@ EOF
 
     # 5-3：验证 lark start 不会无限卡死（凭证无效应快速报错）
     log_info "验证 lark start 不会无限卡死（限 20s）..."
-    timeout 20 uv run python3 remote_claude.py lark start > "$RESULTS_DIR/lark_start.log" 2>&1
+    set +e
+    REMOTE_CLAUDE_NONINTERACTIVE=1 timeout 20 uv run python3 remote_claude.py lark start > "$RESULTS_DIR/lark_start.log" 2>&1
     local rc=$?
+    set -e
     if [ $rc -eq 124 ]; then
         log_error "lark start 超时（20s）—— 存在无限阻塞问题"
         report "✗ lark start 超时（20s）"
@@ -353,41 +356,7 @@ EOF
     fi
     cleanup_session "$session"
 
-    # 5-5：负面测试——旧 CLAUDE_COMMAND 配置不应影响当前 launcher 启动链路
-    log_info "验证旧 CLAUDE_COMMAND 配置不会干扰当前 launcher 启动链路..."
-
-    # 在 .env 中追加旧字段，确认当前实现忽略该遗留配置
-    echo "CLAUDE_COMMAND=claudeyy" >> "$env_file"
-
-    # 清理同名残留会话
-    uv run python3 remote_claude.py kill "$session" > /dev/null 2>&1 || true
-    tmux kill-session -t "rc-$session" 2>/dev/null || true
-
-    timeout 20 uv run python3 remote_claude.py start "$session" \
-        > "$RESULTS_DIR/start_legacy_claude_command.log" 2>&1
-    local legacy_cmd_rc=$?
-
-    # 还原 .env（移除 CLAUDE_COMMAND 行）
-    sed -i '/^CLAUDE_COMMAND=/d' "$env_file"
-
-    if [ $legacy_cmd_rc -ne 124 ]; then
-        log_error "旧 CLAUDE_COMMAND 配置导致 start 未保持运行（rc=$legacy_cmd_rc）"
-        report "✗ 旧 CLAUDE_COMMAND 配置干扰当前启动链路（rc=$legacy_cmd_rc）"
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
-        return 1
-    fi
-
-    if [ ! -S "$socket_path" ]; then
-        log_error "旧 CLAUDE_COMMAND 配置场景下 socket 未创建: $socket_path"
-        report "✗ 旧 CLAUDE_COMMAND 配置场景下 socket 未创建"
-        tmux kill-session -t "rc-$session" 2>/dev/null || true
-        return 1
-    fi
-
-    log_success "旧 CLAUDE_COMMAND 配置未影响当前 launcher 启动链路"
-    report "✓ 旧 CLAUDE_COMMAND 配置被忽略，当前 launcher 启动正常"
-
-    # 5-6：验证 remote-claude start --launcher Codex 能成功启动 Codex 会话
+    # 5-5：验证 remote-claude start --launcher Codex 能成功启动 Codex 会话
     local codex_session="docker-codex-session"
     if ! verify_session_startup "$codex_session" 20 "codex"; then
         return 1

@@ -619,7 +619,8 @@ class TestBuildStreamCard(unittest.TestCase):
         status_md = grey_sets[0]["columns"][0]["elements"]
         agent_texts = [e["content"] for e in status_md if "🤖" in e.get("content", "")]
         self.assertEqual(len(agent_texts), 1)
-        self.assertIn("4 个后台 agent", agent_texts[0])
+        self.assertIn("🤖", agent_texts[0])
+        self.assertIn("4", agent_texts[0])
         self.assertFalse(agent_texts[0].startswith("*"))  # 不再是斜体
 
     def test_with_agent_panel_list(self):

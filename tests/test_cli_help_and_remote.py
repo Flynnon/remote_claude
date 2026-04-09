@@ -3,6 +3,7 @@
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -201,6 +202,255 @@ def test_connection_shortcuts_fall_back_to_uv_when_system_python_too_old(tmp_pat
     assert "scripts/setup.sh --npm --lazy" not in result.stderr
 
 
+def test_lark_session_wrappers_delegate_to_utils_session(monkeypatch):
+    monkeypatch.setattr(remote_claude, "_session_api", lambda: {
+        "is_lark_running": lambda: "running-state",
+        "get_lark_pid": lambda: 2468,
+        "get_lark_status": lambda: {"pid": 2468},
+        "get_lark_pid_file": lambda: Path("/tmp/lark.pid"),
+        "get_lark_status_file": lambda: Path("/tmp/lark.status"),
+        "get_lark_ready_file": lambda: Path("/tmp/lark.ready"),
+    })
+
+    assert remote_claude.is_lark_running() == "running-state"
+    assert remote_claude.get_lark_pid() == 2468
+    assert remote_claude.get_lark_status() == {"pid": 2468}
+    assert remote_claude.get_lark_pid_file() == Path("/tmp/lark.pid")
+    assert remote_claude.get_lark_status_file() == Path("/tmp/lark.status")
+    assert remote_claude.get_lark_ready_file() == Path("/tmp/lark.ready")
+
+
+def test_cmd_lark_start_fails_when_ready_file_never_appears(monkeypatch, tmp_path, capsys):
+    pid_file = tmp_path / "lark.pid"
+    status_file = tmp_path / "lark.status"
+    ready_file = tmp_path / "lark.ready"
+    log_file = tmp_path / "lark.log"
+    log_file.write_text("mock log\n", encoding="utf-8")
+
+    class _FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(remote_claude, "is_lark_running", lambda: False)
+    monkeypatch.setattr(remote_claude, "ensure_socket_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "ensure_user_data_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "_get_role_log_path", lambda _role: log_file)
+    monkeypatch.setattr(remote_claude, "get_lark_pid_file", lambda: pid_file)
+    monkeypatch.setattr(remote_claude, "get_lark_ready_file", lambda: ready_file)
+    monkeypatch.setattr(remote_claude, "save_lark_status", lambda pid: status_file.write_text(str(pid), encoding="utf-8"))
+
+    import utils.runtime_config as runtime_config_module
+    monkeypatch.setattr(runtime_config_module, "check_stale_backup", lambda: None)
+    monkeypatch.setattr(runtime_config_module, "cleanup_backup_files", lambda: None)
+
+    cleaned = []
+
+    def _cleanup():
+        cleaned.append(True)
+        pid_file.unlink(missing_ok=True)
+        status_file.unlink(missing_ok=True)
+        ready_file.unlink(missing_ok=True)
+
+    monkeypatch.setattr(remote_claude, "cleanup_lark", _cleanup)
+
+    terminated = []
+
+    def _terminate(process, timeout=5):
+        terminated.append((process.pid, timeout))
+
+    monkeypatch.setattr(remote_claude, "_terminate_lark_process", _terminate)
+    monkeypatch.setattr(remote_claude.subprocess, "Popen", lambda *args, **kwargs: _FakeProcess())
+    monkeypatch.setattr(
+        remote_claude,
+        "time",
+        type("T", (), {"sleep": staticmethod(lambda _x: None), "monotonic": staticmethod(lambda: 100.0)})(),
+    )
+    monkeypatch.setenv("REMOTE_CLAUDE_LARK_STARTUP_TIMEOUT", "0")
+
+    rc = remote_claude.cmd_lark_start(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "启动超时" in out
+    assert terminated == [(4321, 5)]
+    assert cleaned == [True]
+
+
+def test_cmd_lark_start_treats_credential_error_in_log_as_immediate_failure(monkeypatch, tmp_path, capsys):
+    pid_file = tmp_path / "lark.pid"
+    status_file = tmp_path / "lark.status"
+    ready_file = tmp_path / "lark.ready"
+    log_file = tmp_path / "lark.log"
+    log_file.write_text("[Lark] invalid app credential\n", encoding="utf-8")
+
+    class _FakeProcess:
+        pid = 6789
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(remote_claude, "is_lark_running", lambda: False)
+    monkeypatch.setattr(remote_claude, "ensure_socket_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "ensure_user_data_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "_get_role_log_path", lambda _role: log_file)
+    monkeypatch.setattr(remote_claude, "get_lark_pid_file", lambda: pid_file)
+    monkeypatch.setattr(remote_claude, "get_lark_ready_file", lambda: ready_file)
+    monkeypatch.setattr(remote_claude, "save_lark_status", lambda pid: status_file.write_text(str(pid), encoding="utf-8"))
+
+    import utils.runtime_config as runtime_config_module
+    monkeypatch.setattr(runtime_config_module, "check_stale_backup", lambda: None)
+    monkeypatch.setattr(runtime_config_module, "cleanup_backup_files", lambda: None)
+
+    cleaned = []
+
+    def _cleanup():
+        cleaned.append(True)
+        pid_file.unlink(missing_ok=True)
+        status_file.unlink(missing_ok=True)
+        ready_file.unlink(missing_ok=True)
+
+    monkeypatch.setattr(remote_claude, "cleanup_lark", _cleanup)
+
+    terminated = []
+
+    def _terminate(process, timeout=5):
+        terminated.append((process.pid, timeout))
+
+    monkeypatch.setattr(remote_claude, "_terminate_lark_process", _terminate)
+    monkeypatch.setattr(remote_claude.subprocess, "Popen", lambda *args, **kwargs: _FakeProcess())
+
+    call_count = {"sleep": 0}
+
+    def _sleep(_seconds):
+        call_count["sleep"] += 1
+
+    monkeypatch.setattr(
+        remote_claude,
+        "time",
+        type(
+            "T",
+            (),
+            {
+                "sleep": staticmethod(_sleep),
+                "monotonic": staticmethod(lambda: 100.0 + call_count["sleep"] * 0.1),
+            },
+        )(),
+    )
+    monkeypatch.setenv("REMOTE_CLAUDE_LARK_STARTUP_TIMEOUT", "2")
+
+    rc = remote_claude.cmd_lark_start(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "启动失败，飞书客户端初始化异常" in out
+    assert "invalid app credential" in out
+    assert terminated == [(6789, 5)]
+    assert cleaned == [True]
+
+
+def test_cmd_lark_start_succeeds_when_ready_file_exists(monkeypatch, tmp_path, capsys):
+    pid_file = tmp_path / "lark.pid"
+    status_file = tmp_path / "lark.status"
+    ready_file = tmp_path / "lark.ready"
+    log_file = tmp_path / "lark.log"
+
+    class _FakeProcess:
+        pid = 5678
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(remote_claude, "is_lark_running", lambda: False)
+    monkeypatch.setattr(remote_claude, "ensure_socket_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "ensure_user_data_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "_get_role_log_path", lambda _role: log_file)
+    monkeypatch.setattr(remote_claude, "get_lark_pid_file", lambda: pid_file)
+    monkeypatch.setattr(remote_claude, "get_lark_ready_file", lambda: ready_file)
+    monkeypatch.setattr(remote_claude, "save_lark_status", lambda pid: status_file.write_text(str(pid), encoding="utf-8"))
+
+    import utils.runtime_config as runtime_config_module
+    monkeypatch.setattr(runtime_config_module, "check_stale_backup", lambda: None)
+    monkeypatch.setattr(runtime_config_module, "cleanup_backup_files", lambda: None)
+    monkeypatch.setattr(remote_claude, "cleanup_lark", lambda: None)
+    monkeypatch.setattr(remote_claude, "_terminate_lark_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(remote_claude.subprocess, "Popen", lambda *args, **kwargs: _FakeProcess())
+
+    call_count = {"sleep": 0}
+
+    def _sleep(_seconds):
+        call_count["sleep"] += 1
+        ready_file.write_text("ready", encoding="utf-8")
+
+    monkeypatch.setattr(
+        remote_claude,
+        "time",
+        type(
+            "T",
+            (),
+            {
+                "sleep": staticmethod(_sleep),
+                "monotonic": staticmethod(lambda: 99.0 if call_count["sleep"] == 0 else 100.0 + call_count["sleep"]),
+            },
+        )(),
+    )
+    monkeypatch.setenv("REMOTE_CLAUDE_LARK_STARTUP_TIMEOUT", "2")
+
+    rc = remote_claude.cmd_lark_start(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "✓ 飞书客户端已启动" in out
+    assert pid_file.read_text(encoding="utf-8") == "5678"
+    assert status_file.read_text(encoding="utf-8") == "5678"
+    assert ready_file.exists()
+
+
+def test_cmd_lark_start_skips_backup_prompt_in_noninteractive_mode(monkeypatch, tmp_path, capsys):
+    bak_file = tmp_path / "state.json.bak.test"
+    bak_file.write_text("backup", encoding="utf-8")
+    log_file = tmp_path / "lark.log"
+
+    monkeypatch.setattr(remote_claude, "is_lark_running", lambda: False)
+    monkeypatch.setattr(remote_claude, "ensure_socket_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "ensure_user_data_dir", lambda: None)
+    monkeypatch.setattr(remote_claude, "_get_role_log_path", lambda _role: log_file)
+
+    import utils.runtime_config as runtime_config_module
+    monkeypatch.setattr(runtime_config_module, "check_stale_backup", lambda: bak_file)
+    monkeypatch.setattr(runtime_config_module, "cleanup_backup_files", lambda: None)
+    monkeypatch.setattr(runtime_config_module, "prompt_backup_action", lambda _path: (_ for _ in ()).throw(AssertionError("should not prompt")))
+
+    monkeypatch.setattr(remote_claude.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stop after backup handling")))
+    monkeypatch.setenv("REMOTE_CLAUDE_NONINTERACTIVE", "1")
+
+    rc = remote_claude.cmd_lark_start(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "已删除备份文件" in out
+    assert not bak_file.exists()
+
+
+def test_cmd_lark_start_runs_without_env_prompt_in_noninteractive_mode(tmp_path):
+    home_dir = tmp_path / "lark_start_noninteractive_home"
+    (home_dir / ".remote-claude").mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(REPO_ROOT / "bin/remote-claude"), "lark", "start"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home_dir), "REMOTE_CLAUDE_NONINTERACTIVE": "1"},
+        timeout=10,
+    )
+
+    assert result.returncode in (0, 1)
+    assert "请选择 [1/2]" not in result.stdout
+    assert "FEISHU_APP_ID: " not in result.stdout
+
+
 def test_config_command_help_uses_settings_and_state_wording(capsys):
     result = remote_claude.cmd_config(SimpleNamespace())
 
@@ -245,6 +495,8 @@ def test_remote_list_does_not_require_session_name():
 
     result = validate_remote_args(args, session_fallback="list")
     assert result == ("example.com", 8765, "list", "secret-token")
+
+
 
 
 def test_cmd_list_remote_prints_single_session_status(monkeypatch, capsys):
