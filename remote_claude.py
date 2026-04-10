@@ -1346,7 +1346,11 @@ def cmd_connect(args):
         session = parts[1] if len(parts) > 1 else session
         if ':' in host_part:
             host, port_str = host_part.split(':')
-            port = int(port_str)
+            try:
+                port = int(port_str)
+            except ValueError:
+                print(f"错误: 端口格式无效: {port_str}")
+                return 1
 
     if not session:
         print("错误: 请指定会话名称")
@@ -1371,7 +1375,11 @@ def cmd_remote(args):
         session = parts[1] if len(parts) > 1 else session
         if ':' in host_part:
             host, port_str = host_part.split(':')
-            port = int(port_str)
+            try:
+                port = int(port_str)
+            except ValueError:
+                print(f"错误: 端口格式无效: {port_str}")
+                return 1
 
     if not session:
         print("错误: 请指定会话名称")
