@@ -58,6 +58,16 @@ _A = r'(?:\x1b\[[\d;]*m)*'
 _ANSI_BOX_LEFT_RE = re.compile(rf'^({_A}\s*){_A}[│┃║]{_A} ?')
 _ANSI_BOX_RIGHT_RE = re.compile(rf'\s*{_A}[│┃║]{_A}\s*$')
 
+# OSC 序列：BEL 或 ST 结尾（用于过滤窗口标题等非显示控制序列）
+_OSC_SEQUENCE_RE = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+
+
+def _strip_osc_sequences(text: str) -> str:
+    """移除 OSC 控制序列，保留实际显示文本。"""
+    if not text:
+        return text
+    return _OSC_SEQUENCE_RE.sub('', text)
+
 
 def _strip_inline_boxes_pair(content: str, ansi_content: str) -> tuple:
     """去除 OutputBlock 内嵌的 box-drawing 框线，同步清理 content 和 ansi_content。
@@ -683,7 +693,7 @@ class ClaudeParser(BaseParser):
             body_lines = [_get_row_text(screen, r) for r in block_rows[1:]]
             content = '\n'.join([first_content] + body_lines).rstrip()
             ansi_body_lines = [_get_row_ansi_text(screen, r) for r in block_rows[1:]]
-            ansi_content = '\n'.join([cached_ansi_first] + ansi_body_lines).rstrip()
+            ansi_content = _strip_osc_sequences('\n'.join([cached_ansi_first] + ansi_body_lines).rstrip())
             content, ansi_content = _strip_inline_boxes_pair(content, ansi_content)
             return OutputBlock(
                 content=content, is_streaming=cached_blink, start_row=first_row,
@@ -739,7 +749,7 @@ class ClaudeParser(BaseParser):
             ansi_first = _get_row_ansi_text(screen, first_row, start_col=1).strip()
             ansi_body = [_get_row_ansi_text(screen, r) for r in block_rows[1:]
                          if _get_row_text(screen, r).strip()]
-            ansi_text = '\n'.join([ansi_first] + ansi_body)
+            ansi_text = _strip_osc_sequences('\n'.join([ansi_first] + ansi_body))
             return UserInput(text=text, ansi_text=ansi_text, indicator=ind, ansi_indicator=ansi_ind)
 
         # OutputBlock：圆点字符
@@ -757,7 +767,7 @@ class ClaudeParser(BaseParser):
             first_content = lines[0][1:].strip()
             body_lines = lines[1:]
             content = '\n'.join([first_content] + body_lines).rstrip()
-            ansi_content = '\n'.join([ansi_first] + ansi_body).rstrip()
+            ansi_content = _strip_osc_sequences('\n'.join([ansi_first] + ansi_body).rstrip())
             content, ansi_content = _strip_inline_boxes_pair(content, ansi_content)
             return OutputBlock(
                 content=content, is_streaming=is_blink, start_row=first_row,
@@ -845,7 +855,7 @@ class ClaudeParser(BaseParser):
         content = '\n'.join([first_content] + body_lines).rstrip()
         ansi_first = _get_row_ansi_text(screen, first_row, start_col=1).strip()
         ansi_body = [_get_row_ansi_text(screen, r) for r in block_rows[1:]]
-        ansi_content = '\n'.join([ansi_first] + ansi_body).rstrip()
+        ansi_content = _strip_osc_sequences('\n'.join([ansi_first] + ansi_body).rstrip())
         return SystemBlock(
             content=content,
             start_row=first_row,

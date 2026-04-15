@@ -72,7 +72,13 @@ class WebSocketHandler:
         self.token_manager = TokenManager(session_name, data_dir)
         self.ws_connections: Set["ServerConnection"] = set()
 
-    async def handle_connection(self, websocket: "ServerConnection", path: str):
+    def _resolve_connection_path(self, websocket: "ServerConnection", path: Optional[str] = None) -> str:
+        if path is not None:
+            return path
+        request = getattr(websocket, "request", None)
+        return getattr(request, "path", "") or ""
+
+    async def handle_connection(self, websocket: "ServerConnection", path: Optional[str] = None):
         """处理 WebSocket 连接
 
         流程：
@@ -84,6 +90,7 @@ class WebSocketHandler:
         6. 进入消息处理循环
         """
         # 1. 解析 URL 参数
+        path = self._resolve_connection_path(websocket, path)
         session, token = parse_url_params(path)
 
         # 2. 验证 session
@@ -148,15 +155,12 @@ class WebSocketHandler:
             client_id: 客户端标识
         """
         if msg.type == MessageType.INPUT:
-            # 转发输入到 PTY
-            data = msg.get_data()
-            if hasattr(self.server, '_write_to_pty'):
-                self.server._write_to_pty(data)
+            if hasattr(self.server, '_handle_input'):
+                await self.server._handle_input(client_id, msg)
 
         elif msg.type == MessageType.RESIZE:
-            # 转发终端大小变化
-            if hasattr(self.server, '_resize_pty'):
-                self.server._resize_pty(msg.rows, msg.cols)
+            if hasattr(self.server, '_handle_resize'):
+                await self.server._handle_resize(client_id, msg)
 
         elif msg.type == MessageType.CONTROL:
             # 处理控制命令

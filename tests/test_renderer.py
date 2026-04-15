@@ -153,6 +153,40 @@ def test_output_cleaner_strips_st_terminated_osc_sequences():
     assert 'reply here' == result
 
 
+def test_rich_text_renderer_ignores_osc_title_sequences():
+    """测试服务端渲染链路会忽略 OSC 标题序列"""
+    renderer = RichTextRenderer(80, 24)
+
+    renderer.feed(
+        b'\x1b]0;title\x07'
+        b'\x1b[2J\x1b[H'
+        b'\xe2\x9d\xaf hello\r\n'
+        b'\x1b[36m\xe2\x8f\xba\x1b[0m reply here\r\n'
+    )
+
+    result = renderer.get_plain_display()
+
+    assert 'title' not in result
+    assert 'reply here' in result
+
+
+def test_clean_terminal_output_strips_st_terminated_osc_sequences():
+    """测试 clean_terminal_output 会移除以 ST 结尾的 OSC 序列"""
+    from lark_client.terminal_buffer import clean_terminal_output
+
+    raw = (
+        b'\x1b]0;title\x1b\\'
+        b'\x1b[2J\x1b[H'
+        b'\xe2\x9d\xaf hello\r\n'
+        b'\x1b[36m\xe2\x8f\xba\x1b[0m reply here\r\n'
+    )
+
+    result = clean_terminal_output(raw, user_input='hello')
+
+    assert 'title' not in result
+    assert 'reply here' in result
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("测试 ANSI 清屏命令")

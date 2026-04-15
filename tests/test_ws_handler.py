@@ -146,10 +146,17 @@ class TestWebSocketHandler:
         handler = WebSocketHandler(mock_server, "test-session", data_dir=tmp_path)
         handler.token_manager.get_or_create_token()
 
-        token_file = tmp_path / "test-session_token.json"
+        token_file = tmp_path / "tokens" / "test-session.json"
         assert token_file.exists()
 
-        response = await handler._handle_control("kill")
+        from server import ws_handler as ws_handler_module
+
+        original_cleanup = ws_handler_module.cleanup_session
+        ws_handler_module.cleanup_session = lambda _session: None
+        try:
+            response = await handler._handle_control("kill")
+        finally:
+            ws_handler_module.cleanup_session = original_cleanup
 
         assert response.success is True
         assert token_file.exists() is False
@@ -210,7 +217,7 @@ class TestWebSocketHandler:
         mock_server._handle_input = AsyncMock()
         handler = WebSocketHandler(mock_server, "test-session", data_dir=tmp_path)
 
-        msg = InputMessage(b"ls\n")
+        msg = InputMessage(b"ls\n", "origin-client")
         await handler._handle_message(AsyncMock(), msg, "ws-1")
 
         mock_server._handle_input.assert_awaited_once_with("ws-1", msg)
@@ -225,7 +232,7 @@ class TestWebSocketHandler:
         mock_server._handle_resize = AsyncMock()
         handler = WebSocketHandler(mock_server, "test-session", data_dir=tmp_path)
 
-        msg = ResizeMessage(rows=40, cols=120)
+        msg = ResizeMessage(rows=40, cols=120, client_id="origin-client")
         await handler._handle_message(AsyncMock(), msg, "ws-2")
 
         mock_server._handle_resize.assert_awaited_once_with("ws-2", msg)

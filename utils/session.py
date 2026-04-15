@@ -413,7 +413,7 @@ def list_active_sessions() -> List[dict]:
                 except Exception as e:
                     import logging
                     logger = logging.getLogger('Session')
-                    logger.warning(f"读取共享内存 cli_type 失败: session={session_name}, error={e}")
+                    logger.warning(f"读取共享内存 cli_type 失败: session={display_name}, error={e}")
                     cli_type = CliType.CLAUDE  # 读取失败时使用默认值
 
                 sessions.append({
@@ -423,7 +423,7 @@ def list_active_sessions() -> List[dict]:
                     "cwd": cwd or "",
                     "start_time": start_time,
                     "mtime": mtime,
-                    "tmux": True,
+                    "tmux": tmux_session_exists(display_name),
                     "cli_type": cli_type
                 })
             except (ProcessLookupError, ValueError, OSError):

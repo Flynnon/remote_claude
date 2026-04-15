@@ -32,6 +32,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 logger = logging.getLogger('RemoteCLI')
 USER_DATA_DIR = None
+reset_runtime_config_to_defaults = None
 
 
 def _session_api():
@@ -1386,8 +1387,12 @@ def cmd_config_reset(args):
         SETTINGS_FILE,
         STATE_FILE,
         SETTINGS_LOCK_FILE,
-        STATE_LOCK_FILE
+        STATE_LOCK_FILE,
+        reset_runtime_config_to_defaults as _runtime_reset,
     )
+    global reset_runtime_config_to_defaults
+    if reset_runtime_config_to_defaults is None:
+        reset_runtime_config_to_defaults = _runtime_reset
 
     # 确定要重置的配置文件
     reset_all = getattr(args, 'all', False)
@@ -1430,12 +1435,18 @@ def cmd_config_reset(args):
 
     # 执行重置
     try:
-        if reset_all or reset_settings:
-            SETTINGS_FILE.write_text(config_template.read_text(encoding="utf-8"), encoding="utf-8")
+        do_reset_settings = reset_all or reset_settings
+        do_reset_state = reset_all or reset_state
+
+        reset_runtime_config_to_defaults(
+            reset_settings=do_reset_settings,
+            reset_state=do_reset_state,
+        )
+
+        if do_reset_settings:
             print(f"✓ 已重置用户配置: {SETTINGS_FILE}")
 
-        if reset_all or reset_state:
-            STATE_FILE.write_text(runtime_template.read_text(encoding="utf-8"), encoding="utf-8")
+        if do_reset_state:
             print(f"✓ 已重置运行时配置: {STATE_FILE}")
 
         # 清理副作用文件（锁文件、备份文件），范围与重置配置保持一致

@@ -235,14 +235,29 @@ def test_reset_runtime_config_to_defaults_restores_default_files():
 def test_cmd_config_reset_uses_runtime_config_reset_api(monkeypatch):
     called = {}
 
-    def fake_reset():
-        called['ok'] = True
+    def fake_reset(*, reset_settings=False, reset_state=False):
+        called['reset_settings'] = reset_settings
+        called['reset_state'] = reset_state
 
     monkeypatch.setattr(remote_cli, 'reset_runtime_config_to_defaults', fake_reset)
 
     args = type('Args', (), {'all': True, 'settings_only': False, 'state_only': False})()
     assert remote_cli.cmd_config_reset(args) == 0
-    assert called == {'ok': True}
+    assert called == {'reset_settings': True, 'reset_state': True}
+
+
+def test_cmd_config_reset_settings_only_uses_runtime_config_reset_api(monkeypatch):
+    called = {}
+
+    def fake_reset(*, reset_settings=False, reset_state=False):
+        called['reset_settings'] = reset_settings
+        called['reset_state'] = reset_state
+
+    monkeypatch.setattr(remote_cli, 'reset_runtime_config_to_defaults', fake_reset)
+
+    args = type('Args', (), {'all': False, 'settings_only': True, 'state_only': False})()
+    assert remote_cli.cmd_config_reset(args) == 0
+    assert called == {'reset_settings': True, 'reset_state': False}
 
 
 def test_set_session_auto_answer_enabled_uses_locked_update(monkeypatch):

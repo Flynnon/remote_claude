@@ -82,6 +82,36 @@ class TestClaudeParserSelectedValue(unittest.TestCase):
         self.assertIsNotNone(ob)
         self.assertEqual(ob.selected_value, '1')
 
+    def test_parse_omits_osc_sequences_from_output_block_ansi_content(self):
+        """OutputBlock 的 ansi_content 不应携带 OSC 标题序列"""
+        screen = make_screen(rows=20)
+
+        divider = '─' * 20
+        write_row(screen, 15, divider)
+        write_row(screen, 18, divider)
+        write_row(screen, 1, '⏺ hello')
+
+        screen.buffer[1][0] = Char(data='⏺', fg='cyan', bg='default')
+        screen.buffer[1][1] = Char(data=' ', fg='default', bg='default')
+        screen.buffer[1][2] = Char(data='h', fg='default', bg='default')
+        screen.buffer[1][3] = Char(data='e', fg='default', bg='default')
+        screen.buffer[1][4] = Char(data='l', fg='default', bg='default')
+        screen.buffer[1][5] = Char(data='l', fg='default', bg='default')
+        screen.buffer[1][6] = Char(data='o', fg='default', bg='default')
+
+        from server.parsers import claude_parser as claude_parser_module
+        original_get_row_ansi_text = claude_parser_module._get_row_ansi_text
+        claude_parser_module._get_row_ansi_text = lambda _screen, row, start_col=0: '\x1b]0;title\x07hello' if row == 1 and start_col == 1 else original_get_row_ansi_text(_screen, row, start_col)
+        try:
+            components = self.parser.parse(screen)
+        finally:
+            claude_parser_module._get_row_ansi_text = original_get_row_ansi_text
+
+        output_blocks = [c for c in components if c.__class__.__name__ == 'OutputBlock']
+        self.assertEqual(len(output_blocks), 1)
+        self.assertNotIn('title', output_blocks[0].ansi_content)
+        self.assertEqual(output_blocks[0].ansi_content, 'hello')
+
     def test_selected_value_empty_when_no_cursor(self):
         """无 ❯ 前缀时，selected_value 应为空字符串"""
         screen, input_rows = self._make_input_screen([
@@ -304,6 +334,12 @@ class TestHandleOptionSelect(unittest.IsolatedAsyncioTestCase):
         handler._poller.get_tracker = MagicMock(return_value=None)
         # get_active_card_id 返回 None，跳过 update_card 调用
         handler._poller.get_active_card_id = MagicMock(return_value=None)
+        handler._chat_bindings = {}
+        handler._group_chat_ids = set()
+        handler._save_group_chat_ids = MagicMock()
+        handler._remove_binding_by_chat = MagicMock()
+        handler._disband_groups_for_session = AsyncMock()
+        handler._attach = AsyncMock(return_value=False)
         # 添加 _user_config 属性
         handler._user_config = {}
         return handler

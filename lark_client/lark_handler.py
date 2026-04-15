@@ -39,6 +39,7 @@ from utils.runtime_config import (
     import_legacy_lark_group_chat_ids,
     migrate_legacy_lark_chat_bindings_file,
 )
+from server.biz_enum import CliType
 from .shared_memory_poller import SharedMemoryPoller, CardSlice
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -345,8 +346,10 @@ class LarkHandler:
         if card_id:
             await card_service.send_card(chat_id, card_id)
 
-    async def _cmd_start(self, user_id: str, chat_id: str, args: str, cli_type: str = "claude"):
+    async def _cmd_start(self, user_id: str, chat_id: str, args: str, cli_command: Optional[str] = None):
         """启动新会话"""
+        if cli_command is None:
+            cli_command = "claude"
         parts = args.strip().split(maxsplit=1)
         if not parts:
             await card_service.send_text(
@@ -400,7 +403,7 @@ class LarkHandler:
         _track_stats('lark', 'cmd_start', session_name=session_name, chat_id=chat_id)
 
         try:
-            ok = await self._start_server_session(session_name, work_dir, chat_id)
+            ok = await self._start_server_session(session_name, work_dir, chat_id, cli_command=cli_command)
             if not ok:
                 return
 
@@ -423,14 +426,32 @@ class LarkHandler:
         finally:
             self._starting_sessions.discard(session_name)
 
-    async def _start_server_session(self, session_name: str, work_dir: Optional[str], chat_id: str) -> bool:
-        """启动 server 并等待 socket 就绪。"""
+    def _resolve_launcher_command(self, launcher_name: str) -> str:
+        """按 launcher 名称解析实际启动命令。"""
+        launcher = self._settings.get_launcher(launcher_name)
+        if launcher is None:
+            raise ValueError(f"未找到启动器: {launcher_name}")
+        try:
+            CliType(launcher.cli_type)
+        except ValueError as exc:
+            raise ValueError(f"launcher '{launcher_name}' 的 cli_type 不支持: {launcher.cli_type}") from exc
+        return launcher.command
+
+    def _build_server_start_command(self, session_name: str, cli_command: Optional[str] = None) -> list[str]:
+        """构造 server 启动命令。"""
         script_dir = Path(__file__).parent.parent.absolute()
         server_script = script_dir / "server" / "server.py"
         cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
+        if cli_command:
+            cmd += ["--cli-command", cli_command]
         if self._poller.get_bypass_enabled():
             cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
+        return cmd
 
+    async def _start_server_session(self, session_name: str, work_dir: Optional[str], chat_id: str,
+                                    cli_command: Optional[str] = None) -> bool:
+        """启动 server 并等待 socket 就绪。"""
+        cmd = self._build_server_start_command(session_name, cli_command=cli_command)
         env = _os.environ.copy()
         env.pop("CLAUDECODE", None)
 
@@ -468,7 +489,8 @@ class LarkHandler:
         return False
 
     async def _cmd_start_and_new_group(self, user_id: str, chat_id: str,
-                                       session_name: str, path: str):
+                                       session_name: str, path: str,
+                                       cli_command: Optional[str] = None):
         """在指定目录启动会话并创建专属群聊"""
         work_path = Path(path).expanduser()
         if not work_path.is_dir():
@@ -483,42 +505,10 @@ class LarkHandler:
         self._starting_sessions.add(session_name)
 
         work_dir = str(work_path.absolute())
-        script_dir = Path(__file__).parent.parent.absolute()
-        server_script = script_dir / "server" / "server.py"
-        cmd = ["uv", "run", "--project", str(script_dir), "python3", str(server_script), session_name]
-        if self._poller.get_bypass_enabled():
-            cmd += ["--", "--dangerously-skip-permissions", "--permission-mode=dontAsk"]
 
         try:
-            env = _os.environ.copy()
-            env.pop("CLAUDECODE", None)
-
-            log_path = USER_DATA_DIR / "startup.log"
-            start_time = _datetime.now()
-
-            with open(log_path, 'a') as stderr_fd:
-                proc = subprocess.Popen(
-                    cmd, stdout=subprocess.DEVNULL, stderr=stderr_fd,
-                    start_new_session=True, cwd=work_dir, env=env,
-                )
-
-            socket_path = get_socket_path(session_name)
-            for i in range(120):
-                await asyncio.sleep(0.1)
-                if socket_path.exists():
-                    break
-                if (i + 1) % 10 == 0:
-                    elapsed = (i + 1) // 10
-                    rc = proc.poll()
-                    if rc is not None:
-                        log_content = _read_log_since(start_time, log_path)
-                        logger.warning(f"启动并创建群聊失败: server 进程已退出 (exitcode={rc}, elapsed={elapsed}s)\n{log_content}")
-                        await card_service.send_text(chat_id, f"错误: Server 进程意外退出 (code={rc})\n\n{log_content}")
-                        return
-            else:
-                log_content = _read_log_since(start_time, log_path)
-                logger.error(f"启动并创建群聊超时 (12s), session={session_name}\n{log_content}")
-                await card_service.send_text(chat_id, f"错误: 会话启动超时 (12s)\n\n{log_content}")
+            ok = await self._start_server_session(session_name, work_dir, chat_id, cli_command=cli_command)
+            if not ok:
                 return
 
             await self._cmd_new_group(user_id, chat_id, session_name)

@@ -105,6 +105,34 @@ def test_parse_url_params_handles_missing_values():
     assert parse_url_params("/ws") == (None, None)
 
 
+def test_list_active_sessions_reports_real_tmux_state(monkeypatch, tmp_path):
+    import utils.session as session_module
+
+    monkeypatch.setattr(session_module, "SOCKET_DIR", tmp_path)
+    monkeypatch.setattr(session_module, "ensure_socket_dir", lambda: None)
+    monkeypatch.setattr(session_module, "get_process_cwd", lambda _pid: "/tmp/demo")
+    monkeypatch.setattr(session_module.os, "kill", lambda _pid, _sig: None)
+    monkeypatch.setattr(session_module, "tmux_session_exists", lambda _session: False)
+
+    class _FakeReader:
+        def read(self):
+            return {"cli_type": "claude"}
+
+    monkeypatch.setattr("server.shared_state.SharedStateReader", _FakeReader)
+
+    safe_name = "demo-safe"
+    (tmp_path / f"{safe_name}.sock").write_text("", encoding="utf-8")
+    (tmp_path / f"{safe_name}.pid").write_text("123", encoding="utf-8")
+    (tmp_path / f"{safe_name}.name").write_text("demo-session", encoding="utf-8")
+    (tmp_path / f"{safe_name}.mq").write_text("", encoding="utf-8")
+
+    sessions = session_module.list_active_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0]["name"] == "demo-session"
+    assert sessions[0]["tmux"] is False
+
+
 def test_ws_handler_remote_control_supports_lark_lifecycle_actions():
     from server.ws_handler import WebSocketHandler
 

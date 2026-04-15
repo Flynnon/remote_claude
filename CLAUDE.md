@@ -34,7 +34,7 @@ uv run python3 -m pytest tests/test_session_truncate.py tests/test_runtime_confi
 uv run python3 -m pytest tests/test_entry_lazy_init.py -q
 uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_renderer.py -q
 uv run python3 -m pytest tests/test_custom_commands.py -q
-uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q
+uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_runtime_behaviors -q
 
 # Docker 回归
 docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh

@@ -85,7 +85,7 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 
 | 验证点 | 命令 |
 |--------|------|
-| 飞书未配置时允许本地启动 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q` |
+| 飞书未配置时允许本地启动 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_runtime_behaviors -q` |
 | bin 入口统一走项目 Python | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_bin_entry_scripts_use_remote_claude_python_consistently -q` |
 | 显式跳过飞书配置检查 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_check_env_allows_skip_when_feishu_not_required -q` |
 | lazy init 失败信息可见 | `uv run python3 -m pytest tests/test_entry_lazy_init.py::test_lazy_init_failure_surfaces_log_hint_and_stage_details -q` |

@@ -162,7 +162,6 @@ class TestQuickCommandLoading(unittest.TestCase):
             mock_card_service.send_text = AsyncMock()
 
             result = asyncio.run(handler._start_server_session("demo", None, "chat_1"))
-            called_cmd = mock_path.return_value.parent.parent.__truediv__.return_value
 
         self.assertTrue(result)
         self.assertGreaterEqual(poll_state["count"], 3)
@@ -193,6 +192,125 @@ class TestQuickCommandLoading(unittest.TestCase):
         handler._save_chat_bindings.assert_called_once()
         mock_card_service.send_text.assert_not_called()
         self.assertEqual(mock_sleep.await_count, 2)
+
+    def test_cmd_start_passes_cli_command_to_server_session(self):
+        """测试启动命令会把 launcher/cli-command 透传到 server 启动链路"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        handler._attach = AsyncMock(return_value=True)
+        handler._save_chat_bindings = MagicMock()
+
+        captured = {}
+
+        async def fake_start_server_session(session_name, work_dir, chat_id, cli_command=None):
+            captured["session_name"] = session_name
+            captured["work_dir"] = work_dir
+            captured["chat_id"] = chat_id
+            captured["cli_command"] = cli_command
+            return True
+
+        handler._start_server_session = AsyncMock(side_effect=fake_start_server_session)
+
+        with patch('lark_client.lark_handler.list_active_sessions', return_value=[]), \
+                patch('lark_client.lark_handler.card_service') as mock_card_service, \
+                patch('lark_client.lark_handler.Path') as mock_path:
+            mock_card_service.send_text = AsyncMock()
+            mock_path.return_value.expanduser.return_value.exists.return_value = True
+            mock_path.return_value.expanduser.return_value.is_dir.return_value = True
+            mock_path.return_value.expanduser.return_value.absolute.return_value = Path('/tmp/proj')
+
+            asyncio.run(handler._cmd_start("user_1", "chat_1", "demo ~/proj", cli_command="claude --model sonnet"))
+
+        self.assertEqual(captured, {
+            "session_name": "demo",
+            "work_dir": "/tmp/proj",
+            "chat_id": "chat_1",
+            "cli_command": "claude --model sonnet",
+        })
+
+    def test_cmd_start_and_new_group_reuses_server_session_startup(self):
+        """测试创建群聊前复用统一的 server 启动逻辑"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        handler._cmd_new_group = AsyncMock()
+
+        captured = {}
+
+        async def fake_start_server_session(session_name, work_dir, chat_id, cli_command=None):
+            captured["session_name"] = session_name
+            captured["work_dir"] = work_dir
+            captured["chat_id"] = chat_id
+            captured["cli_command"] = cli_command
+            return True
+
+        handler._start_server_session = AsyncMock(side_effect=fake_start_server_session)
+
+        with patch('lark_client.lark_handler.list_active_sessions', return_value=[]), \
+                patch('lark_client.lark_handler.card_service') as mock_card_service, \
+                patch('lark_client.lark_handler.Path') as mock_path:
+            mock_card_service.send_text = AsyncMock()
+            mock_path.return_value.expanduser.return_value.is_dir.return_value = True
+            mock_path.return_value.expanduser.return_value.absolute.return_value = Path('/tmp/proj')
+
+            asyncio.run(handler._cmd_start_and_new_group(
+                "user_1", "chat_1", "demo", "~/proj", cli_command="claude --model sonnet"
+            ))
+
+        handler._start_server_session.assert_awaited_once()
+        handler._cmd_new_group.assert_awaited_once_with("user_1", "chat_1", "demo")
+        self.assertEqual(captured, {
+            "session_name": "demo",
+            "work_dir": "/tmp/proj",
+            "chat_id": "chat_1",
+            "cli_command": "claude --model sonnet",
+        })
+
+    def test_resolve_launcher_command_returns_configured_command(self):
+        """测试按 launcher 名称解析命令"""
+        from lark_client.lark_handler import LarkHandler
+        from utils.runtime_config import Launcher, Settings
+
+        handler = LarkHandler()
+        handler._settings = Settings(launchers=[
+            Launcher(name="Claude", cli_type="claude", command="claude"),
+            Launcher(name="Aider", cli_type="claude", command="aider --model claude-sonnet-4"),
+        ])
+
+        self.assertEqual(
+            handler._resolve_launcher_command("Aider"),
+            "aider --model claude-sonnet-4",
+        )
+
+    def test_resolve_launcher_command_rejects_unknown_launcher(self):
+        """测试未知 launcher 会抛出明确错误"""
+        from lark_client.lark_handler import LarkHandler
+        from utils.runtime_config import Launcher, Settings
+
+        handler = LarkHandler()
+        handler._settings = Settings(launchers=[
+            Launcher(name="Claude", cli_type="claude", command="claude"),
+        ])
+
+        with self.assertRaisesRegex(ValueError, "未找到启动器"):
+            handler._resolve_launcher_command("Unknown")
+
+    def test_resolve_launcher_command_rejects_invalid_cli_type(self):
+        """测试 conf 中 launcher 的 cli_type 非法时直接报错"""
+        from lark_client.lark_handler import LarkHandler
+
+        handler = LarkHandler()
+        handler._settings = type("SettingsStub", (), {
+            "get_launcher": lambda self, _name: type("LauncherStub", (), {
+                "name": "Broken",
+                "cli_type": "invalid",
+                "command": "broken"
+            })()
+        })()
+
+        with self.assertRaisesRegex(ValueError, "cli_type"):
+            handler._resolve_launcher_command("Broken")
 
     def test_handle_quick_command_shows_loading(self):
         """测试快捷命令发送时显示 loading 状态"""
@@ -772,6 +890,83 @@ def test_main_routes_stream_attach_existing(mock_create_task):
     main.handle_card_action(event)
 
     assert mock_create_task.called
+
+
+@patch("lark_client.main.asyncio.create_task")
+def test_main_dir_start_reports_missing_launcher(mock_create_task):
+    from lark_client import main
+
+    mock_create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+    main.handler._cmd_start = MagicMock()
+
+    event = MagicMock()
+    event.event.action.form_value = None
+    event.event.action.value = {"action": "dir_start", "path": "/tmp/demo", "session_name": "demo"}
+    event.event.operator.open_id = "u1"
+    event.event.context.open_chat_id = "c1"
+    event.event.context.open_message_id = "m1"
+
+    main.handle_card_action(event)
+
+    scheduled = [call.args[0].cr_code.co_name for call in mock_create_task.call_args_list]
+    assert scheduled == ["send_text"]
+    main.handler._cmd_start.assert_not_called()
+
+
+@patch("lark_client.main.asyncio.create_task")
+def test_main_dir_start_reports_invalid_launcher_resolution(mock_create_task):
+    from lark_client import main
+
+    mock_create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+    main.handler._cmd_start = MagicMock()
+    main.handler._resolve_launcher_command = MagicMock(side_effect=ValueError("未找到启动器: Broken"))
+
+    event = MagicMock()
+    event.event.action.form_value = None
+    event.event.action.value = {
+        "action": "dir_start",
+        "path": "/tmp/demo",
+        "session_name": "demo",
+        "launcher": "Broken",
+    }
+    event.event.operator.open_id = "u1"
+    event.event.context.open_chat_id = "c1"
+    event.event.context.open_message_id = "m1"
+
+    main.handle_card_action(event)
+
+    scheduled = [call.args[0].cr_code.co_name for call in mock_create_task.call_args_list]
+    assert scheduled == ["send_text"]
+    main.handler._cmd_start.assert_not_called()
+
+
+@patch("lark_client.main.asyncio.create_task")
+def test_main_dir_new_group_reports_invalid_cli_type(mock_create_task):
+    from lark_client import main
+
+    mock_create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+    main.handler._cmd_start_and_new_group = MagicMock()
+    main.handler._resolve_launcher_command = MagicMock(
+        side_effect=ValueError("launcher 'Broken' 的 cli_type 不支持: invalid")
+    )
+
+    event = MagicMock()
+    event.event.action.form_value = None
+    event.event.action.value = {
+        "action": "dir_new_group",
+        "path": "/tmp/demo",
+        "session_name": "demo",
+        "launcher": "Broken",
+    }
+    event.event.operator.open_id = "u1"
+    event.event.context.open_chat_id = "c1"
+    event.event.context.open_message_id = "m1"
+
+    main.handle_card_action(event)
+
+    scheduled = [call.args[0].cr_code.co_name for call in mock_create_task.call_args_list]
+    assert scheduled == ["send_text"]
+    main.handler._cmd_start_and_new_group.assert_not_called()
 
 
 @patch("lark_client.lark_handler.get_lark_chat_bindings", return_value={"chat_state": "session-state"})

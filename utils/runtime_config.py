@@ -714,7 +714,7 @@ class State:
 
 def _write_config_atomically(config_obj: Any, config_file: Path) -> None:
     """将配置先写入同目录临时文件，再原子替换目标文件。"""
-    content = json.dumps(config_obj.to_dict(), indent=2, ensure_ascii=False)
+    content = json.dumps(config_obj.to_dict(), indent=2, ensure_ascii=False) + "\n"
     config_file.parent.mkdir(parents=True, exist_ok=True)
 
     fd, tmp_path_str = tempfile.mkstemp(
@@ -859,6 +859,15 @@ def load_state() -> State:
 def save_state(state: State) -> None:
     """保存运行时状态"""
     _save_config_with_lock(state, STATE_FILE, STATE_LOCK_FILE)
+
+
+def reset_runtime_config_to_defaults(*, reset_settings: bool = True, reset_state: bool = True) -> None:
+    """按默认值原子重置运行时配置。"""
+    if reset_settings:
+        save_settings(Settings())
+
+    if reset_state:
+        save_state(State())
 
 
 def list_remote_connections(settings: Optional[Settings] = None) -> List[RemoteConnection]:

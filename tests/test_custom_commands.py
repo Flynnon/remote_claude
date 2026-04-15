@@ -175,23 +175,22 @@ class TestGetMatchingCommands:
 class TestDirStartCallback:
     """测试 dir_start 回调处理"""
 
-    def test_dir_start_callback_with_cli_command(self):
+    def test_dir_start_callback_uses_launcher_name(self):
         value = {
             "action": "dir_start",
             "path": "/path/to/project",
             "session_name": "myproject",
-            "cli_command": "aider --model claude-sonnet-4",
+            "launcher": "Aider",
         }
-        assert value.get("cli_command") == "aider --model claude-sonnet-4"
+        assert value.get("launcher") == "Aider"
 
-    def test_dir_start_callback_without_cli_command(self):
+    def test_dir_start_callback_without_launcher_keeps_empty(self):
         value = {
-            "action"      : "dir_start",
-            "path"        : "/path/to/project",
+            "action": "dir_start",
+            "path": "/path/to/project",
             "session_name": "myproject",
         }
-        cli_command = value.get("cli_command", "claude")
-        assert cli_command == "claude"
+        assert value.get("launcher") is None
 
 
 def test_package_json_includes_public_docs_but_not_superpowers_docs():
@@ -289,6 +288,22 @@ def test_cmd_config_help_mentions_reset_scope(capsys):
     assert "仅重置运行时配置（state.json）" in out
 
 
+def test_test_plan_uses_existing_entry_lazy_init_target():
+    content = (REPO_ROOT / "tests" / "TEST_PLAN.md").read_text(encoding="utf-8")
+
+    assert "test_entry_script_runtime_behaviors" in content
+    assert "test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional" not in content
+
+
+
+def test_claude_md_uses_existing_entry_lazy_init_target():
+    content = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+
+    assert "test_entry_script_runtime_behaviors" in content
+    assert "test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional" not in content
+
+
+
 def test_cmd_config_reset_interactive_choice_3_resets_only_state(monkeypatch, tmp_path, capsys):
     user_data_dir = tmp_path / "user-data"
     user_data_dir.mkdir()
@@ -303,6 +318,7 @@ def test_cmd_config_reset_interactive_choice_3_resets_only_state(monkeypatch, tm
 
     defaults_dir = remote_claude.SCRIPT_DIR / "resources" / "defaults"
     expected_state = (defaults_dir / "state.json.example").read_text(encoding="utf-8")
+    assert expected_state.endswith("\n")
 
     monkeypatch.setattr("builtins.input", lambda _prompt: "3")
     monkeypatch.setattr("utils.runtime_config.USER_DATA_DIR", user_data_dir)
