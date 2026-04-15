@@ -162,6 +162,7 @@ class TestQuickCommandLoading(unittest.TestCase):
             mock_card_service.send_text = AsyncMock()
 
             result = asyncio.run(handler._start_server_session("demo", None, "chat_1"))
+            called_cmd = mock_path.return_value.parent.parent.__truediv__.return_value
 
         self.assertTrue(result)
         self.assertGreaterEqual(poll_state["count"], 3)

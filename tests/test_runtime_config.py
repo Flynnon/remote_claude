@@ -45,7 +45,10 @@ from utils.runtime_config import (
     STATE_FILE,
     save_lark_chat_bindings,
     save_lark_group_chat_ids,
+    reset_runtime_config_to_defaults,
 )
+
+import remote_claude as remote_cli
 
 
 class TestEnv:
@@ -209,6 +212,37 @@ def test_load_save_state():
 
     finally:
         env.teardown()
+
+
+def test_reset_runtime_config_to_defaults_restores_default_files():
+    env = TestEnv()
+    try:
+        env.setup()
+
+        config_module.SETTINGS_FILE.write_text('{"version":"bad","launchers":[]}', encoding='utf-8')
+        config_module.STATE_FILE.write_text('{"version":"bad","sessions":{}}', encoding='utf-8')
+
+        reset_runtime_config_to_defaults()
+
+        settings = load_settings()
+        state = load_state()
+        assert settings.version == SETTINGS_CURRENT_VERSION
+        assert state.version == STATE_CURRENT_VERSION
+    finally:
+        env.teardown()
+
+
+def test_cmd_config_reset_uses_runtime_config_reset_api(monkeypatch):
+    called = {}
+
+    def fake_reset():
+        called['ok'] = True
+
+    monkeypatch.setattr(remote_cli, 'reset_runtime_config_to_defaults', fake_reset)
+
+    args = type('Args', (), {'all': True, 'settings_only': False, 'state_only': False})()
+    assert remote_cli.cmd_config_reset(args) == 0
+    assert called == {'ok': True}
 
 
 def test_set_session_auto_answer_enabled_uses_locked_update(monkeypatch):

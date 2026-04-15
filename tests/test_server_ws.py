@@ -129,6 +129,23 @@ async def test_ws_handler_rejects_invalid_token_with_error_message():
     websocket.close.assert_awaited()
 
 
+@pytest.mark.asyncio
+async def test_handle_connection_accepts_request_path_from_websocket_object(tmp_path):
+    from server.ws_handler import WebSocketHandler
+
+    server = MagicMock(history_buffer=b"")
+    handler = WebSocketHandler(server, "demo", data_dir=tmp_path)
+    handler._authenticate = MagicMock(return_value=True)
+
+    websocket = AsyncMock()
+    websocket.request = MagicMock(path="/ws?session=demo&token=ok")
+    websocket.__aiter__.return_value = []
+
+    await handler.handle_connection(websocket)
+
+    assert websocket not in handler.ws_connections
+
+
 def test_start_pty_log_command_is_sanitized(monkeypatch):
     """测试 _start_pty 记录的启动命令会脱敏敏感参数"""
     from server import server as server_module

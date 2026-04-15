@@ -199,3 +199,33 @@ class TestWebSocketHandler:
         test_data = b"test output"
         await handler.broadcast_to_ws(test_data)
         # 正常完成即可
+
+    @pytest.mark.anyio
+    async def test_handle_message_forwards_input_to_server_handler(self, tmp_path):
+        """测试 INPUT 消息会转发到服务端真实处理接口"""
+        from server.ws_handler import WebSocketHandler
+        from utils.protocol import InputMessage
+
+        mock_server = Mock()
+        mock_server._handle_input = AsyncMock()
+        handler = WebSocketHandler(mock_server, "test-session", data_dir=tmp_path)
+
+        msg = InputMessage(b"ls\n")
+        await handler._handle_message(AsyncMock(), msg, "ws-1")
+
+        mock_server._handle_input.assert_awaited_once_with("ws-1", msg)
+
+    @pytest.mark.anyio
+    async def test_handle_message_forwards_resize_to_server_handler(self, tmp_path):
+        """测试 RESIZE 消息会转发到服务端真实处理接口"""
+        from server.ws_handler import WebSocketHandler
+        from utils.protocol import ResizeMessage
+
+        mock_server = Mock()
+        mock_server._handle_resize = AsyncMock()
+        handler = WebSocketHandler(mock_server, "test-session", data_dir=tmp_path)
+
+        msg = ResizeMessage(rows=40, cols=120)
+        await handler._handle_message(AsyncMock(), msg, "ws-2")
+
+        mock_server._handle_resize.assert_awaited_once_with("ws-2", msg)
