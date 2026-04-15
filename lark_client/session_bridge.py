@@ -9,7 +9,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, Callable, Dict
+from typing import Optional, Callable
 
 logger = logging.getLogger('SessionBridge')
 
@@ -183,7 +183,7 @@ class SessionBridge:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug(f"读取错误: {e}")
+                logger.warning(f"读取错误: {e}")
                 break
 
         if self.on_disconnect and not self._manually_disconnected:

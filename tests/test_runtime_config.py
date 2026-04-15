@@ -22,6 +22,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import utils.runtime_config as config_module
+import client.connection_config as connection_config
 
 from utils.runtime_config import (
     Settings,
@@ -42,6 +43,8 @@ from utils.runtime_config import (
     USER_DATA_DIR,
     SETTINGS_FILE,
     STATE_FILE,
+    save_lark_chat_bindings,
+    save_lark_group_chat_ids,
 )
 
 
@@ -52,6 +55,7 @@ class TestEnv:
         self.original_dir = None
         self.temp_dir = None
         self.old_env = {}
+        self.old_connection_env = {}
 
     def setup(self):
         """设置测试环境"""
@@ -66,18 +70,26 @@ class TestEnv:
             'SETTINGS_LOCK_FILE': config_module.SETTINGS_LOCK_FILE,
             'STATE_LOCK_FILE': config_module.STATE_LOCK_FILE,
         }
+        self.old_connection_env = {
+            'CONNECTIONS_FILE': connection_config.CONNECTIONS_FILE,
+            '_legacy_migrated': connection_config._legacy_migrated,
+        }
 
         config_module.USER_DATA_DIR = self.temp_dir
         config_module.SETTINGS_FILE = self.temp_dir / "settings.json"
         config_module.STATE_FILE = self.temp_dir / "state.json"
         config_module.SETTINGS_LOCK_FILE = self.temp_dir / "settings.json.lock"
         config_module.STATE_LOCK_FILE = self.temp_dir / "state.json.lock"
+        connection_config.CONNECTIONS_FILE = self.temp_dir / "remote_connections.json"
+        connection_config._legacy_migrated = False
 
     def teardown(self):
         """恢复测试环境"""
         import utils.runtime_config as config_module
         for key, value in self.old_env.items():
             setattr(config_module, key, value)
+        for key, value in self.old_connection_env.items():
+            setattr(connection_config, key, value)
 
         if self.temp_dir and self.temp_dir.exists():
             shutil.rmtree(self.temp_dir)
@@ -323,6 +335,50 @@ def test_save_settings_writes_via_temp_file_replace(monkeypatch):
         env.teardown()
 
 
+def test_update_config_with_lock_uses_lock_file_and_persists_latest_state(monkeypatch):
+    import utils.runtime_config as config_module
+
+    env = TestEnv()
+    try:
+        env.setup()
+        save_settings(Settings())
+
+        open_calls = []
+        flock_calls = []
+        original_open = open
+        original_flock = config_module.fcntl.flock
+
+        def spy_open(path, mode='r', *args, **kwargs):
+            open_calls.append((Path(path), mode))
+            return original_open(path, mode, *args, **kwargs)
+
+        def spy_flock(fd, op):
+            flock_calls.append(op)
+            return original_flock(fd, op)
+
+        monkeypatch.setattr("builtins.open", spy_open)
+        monkeypatch.setattr(config_module.fcntl, "flock", spy_flock)
+
+        def mutator(settings):
+            settings.remote.default_connection = "demo"
+            return settings.remote.default_connection
+
+        result = config_module._update_config_with_lock(
+            config_module.SETTINGS_FILE,
+            config_module.SETTINGS_LOCK_FILE,
+            config_module.load_settings,
+            config_module.Settings,
+            mutator,
+        )
+
+        assert result == "demo"
+        assert load_settings().remote.default_connection == "demo"
+        assert (config_module.SETTINGS_LOCK_FILE, 'a+') in open_calls
+        assert flock_calls == [config_module.fcntl.LOCK_EX, config_module.fcntl.LOCK_UN]
+    finally:
+        env.teardown()
+
+
 def test_corrupted_settings():
     env = TestEnv()
     try:
@@ -484,6 +540,117 @@ def test_lark_config_supports_legacy_and_new_env_name_precedence():
         assert config_module.GROUP_NAME_PREFIX == "New-Chat"
         assert config_module.LARK_LOG_LEVEL == 40
         assert config_module.LARK_NO_PROXY is False
+    finally:
+        env.teardown()
+
+
+def test_remote_connections_migrate_into_settings_remote_once():
+    env = TestEnv()
+    try:
+        env.setup()
+        legacy_file = connection_config.CONNECTIONS_FILE
+        legacy_file.write_text(
+            json.dumps({
+                "connections": {
+                    "prod": {
+                        "name": "prod",
+                        "host": "prod.example.com",
+                        "port": 9001,
+                        "token": "token-prod",
+                        "session": "alpha",
+                        "description": "primary",
+                        "created_at": "2026-04-10T00:00:00",
+                        "last_used": "2026-04-10T00:00:00",
+                        "is_default": True,
+                    },
+                    "staging": {
+                        "name": "staging",
+                        "host": "staging.example.com",
+                        "port": 9002,
+                        "token": "token-staging",
+                        "session": "beta",
+                        "description": "secondary",
+                        "created_at": "2026-04-11T00:00:00",
+                        "last_used": "2026-04-11T00:00:00",
+                        "is_default": False,
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        migrated = connection_config.list_connections()
+        settings = load_settings()
+
+        assert sorted(conn.name for conn in migrated) == ["prod", "staging"]
+        assert settings.remote.default_connection == "prod"
+        assert sorted(settings.remote.connections.keys()) == ["prod", "staging"]
+        assert settings.remote.connections["prod"].host == "prod.example.com"
+        assert settings.remote.connections["prod"].is_default is True
+        assert settings.remote.connections["staging"].port == 9002
+
+        legacy_file.write_text(json.dumps({"connections": {}}), encoding="utf-8")
+        migrated_again = connection_config.list_connections()
+
+        assert sorted(conn.name for conn in migrated_again) == ["prod", "staging"]
+        assert load_settings().remote.default_connection == "prod"
+    finally:
+        env.teardown()
+
+
+def test_save_lark_state_helpers_roundtrip_through_state_file():
+    env = TestEnv()
+    try:
+        env.setup()
+
+        save_lark_chat_bindings({"chat_a": "session-a", "chat_b": "session-b"})
+        save_lark_group_chat_ids(["group-1", "group-2", "group-1"])
+
+        state = load_state()
+
+        assert state.lark.chat_bindings == {"chat_a": "session-a", "chat_b": "session-b"}
+        assert state.lark.group_chat_ids == ["group-1", "group-2"]
+    finally:
+        env.teardown()
+
+
+def test_get_lark_state_helpers_do_not_fallback_to_legacy_files(tmp_path):
+    env = TestEnv()
+    try:
+        env.setup()
+
+        from utils import runtime_config
+        legacy_chat_file = tmp_path / "lark_chat_bindings.json"
+        legacy_group_file = tmp_path / "lark_group_ids.json"
+        legacy_chat_file.write_text('{"legacy-chat": "legacy-session"}', encoding="utf-8")
+        legacy_group_file.write_text('["legacy-group"]', encoding="utf-8")
+
+        assert runtime_config.get_lark_chat_bindings() == {}
+        assert runtime_config.get_lark_group_chat_ids() == []
+    finally:
+        env.teardown()
+
+
+def test_migrate_legacy_lark_chat_bindings_file_moves_tmp_file_once(monkeypatch, tmp_path):
+    env = TestEnv()
+    try:
+        env.setup()
+
+        from utils import runtime_config
+
+        target = tmp_path / "user" / "lark_chat_bindings.json"
+        legacy = tmp_path / "tmp" / "lark_chat_bindings.json"
+        legacy.parent.mkdir(parents=True)
+        target.parent.mkdir(parents=True)
+        legacy.write_text('{"chat": "session"}', encoding="utf-8")
+
+        moved = []
+        monkeypatch.setattr(runtime_config, "ensure_user_data_dir", lambda: moved.append("ensure"))
+        monkeypatch.setattr(runtime_config.shutil, "move", lambda src, dst: moved.append((src, dst)))
+
+        runtime_config.migrate_legacy_lark_chat_bindings_file(legacy, target)
+
+        assert moved == ["ensure", (str(legacy), str(target))]
     finally:
         env.teardown()
 

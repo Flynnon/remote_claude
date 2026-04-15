@@ -1,6 +1,6 @@
 {
   "name": "remote-claude",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "双端共享 Claude/Codex CLI 工具",
   "bin": {
     "remote-claude": "bin/remote-claude",
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "preinstall": "sh scripts/preinstall.sh",
-    "postinstall": "sh scripts/install.sh --npm",
+    "postinstall": "sh scripts/postinstall.sh",
     "preuninstall": "sh scripts/uninstall.sh -y"
   },
   "pnpm": {
@@ -22,6 +22,7 @@
   "files": [
     "bin/",
     "scripts/*.sh",
+    "scripts/postinstall.sh",
     "scripts/*.py",
     "remote_claude.py",
     "server/*.py",

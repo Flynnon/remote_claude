@@ -9,7 +9,6 @@
 """
 
 import asyncio
-import json
 import logging
 import os as _os
 import subprocess
@@ -17,7 +16,7 @@ import sys
 import time
 from datetime import datetime as _datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger('LarkHandler')
 
@@ -30,11 +29,20 @@ from .card_builder import (
     build_dir_card,
     build_menu_card,
 )
-from utils.runtime_config import load_settings
+from utils.runtime_config import (
+    load_settings,
+    save_lark_chat_bindings,
+    get_lark_chat_bindings,
+    save_lark_group_chat_ids,
+    get_lark_group_chat_ids,
+    import_legacy_lark_chat_bindings,
+    import_legacy_lark_group_chat_ids,
+    migrate_legacy_lark_chat_bindings_file,
+)
 from .shared_memory_poller import SharedMemoryPoller, CardSlice
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, ensure_user_data_dir, USER_DATA_DIR
+from utils.session import list_active_sessions, get_socket_path, get_chat_bindings_file, USER_DATA_DIR
 
 
 def _read_log_since(since: '_datetime', log_path: 'Path') -> str:
@@ -89,14 +97,10 @@ class LarkHandler:
     _LARK_GROUP_IDS_FILE = Path(get_chat_bindings_file()).parent / "lark_group_ids.json"
 
     def __init__(self):
-        # 兼容迁移：旧绑定文件存在而新路径不存在时，自动迁移
-        if not self._CHAT_BINDINGS_FILE.exists() and self._OLD_CHAT_BINDINGS_FILE.exists():
-            try:
-                import shutil
-                ensure_user_data_dir()
-                shutil.move(str(self._OLD_CHAT_BINDINGS_FILE), str(self._CHAT_BINDINGS_FILE))
-            except Exception as e:
-                logger.warning(f"迁移旧绑定文件失败: {e}")
+        try:
+            migrate_legacy_lark_chat_bindings_file(self._OLD_CHAT_BINDINGS_FILE, self._CHAT_BINDINGS_FILE)
+        except Exception as e:
+            logger.warning(f"迁移旧绑定文件失败: {e}")
         # chat_id → SessionBridge（活跃连接）
         self._bridges: Dict[str, SessionBridge] = {}
         # chat_id → session_name（当前连接状态）
@@ -118,35 +122,33 @@ class LarkHandler:
 
     def _load_chat_bindings(self) -> Dict[str, str]:
         try:
-            if self._CHAT_BINDINGS_FILE.exists():
-                return json.loads(self._CHAT_BINDINGS_FILE.read_text())
+            bindings = get_lark_chat_bindings()
+            if bindings:
+                return bindings
+            return import_legacy_lark_chat_bindings(self._CHAT_BINDINGS_FILE)
         except Exception:
             pass
         return {}
 
     def _save_chat_bindings(self):
         try:
-            ensure_user_data_dir()
-            self._CHAT_BINDINGS_FILE.write_text(
-                json.dumps(self._chat_bindings, ensure_ascii=False)
-            )
+            save_lark_chat_bindings(self._chat_bindings)
         except Exception as e:
             logger.warning(f"保存绑定失败: {e}")
 
     def _load_group_chat_ids(self) -> set:
         try:
-            if self._LARK_GROUP_IDS_FILE.exists():
-                return set(json.loads(self._LARK_GROUP_IDS_FILE.read_text()))
+            group_chat_ids = get_lark_group_chat_ids()
+            if group_chat_ids:
+                return set(group_chat_ids)
+            return set(import_legacy_lark_group_chat_ids(self._LARK_GROUP_IDS_FILE))
         except Exception:
             pass
         return set()
 
     def _save_group_chat_ids(self):
         try:
-            ensure_user_data_dir()
-            self._LARK_GROUP_IDS_FILE.write_text(
-                json.dumps(list(self._group_chat_ids), ensure_ascii=False)
-            )
+            save_lark_group_chat_ids(list(self._group_chat_ids))
         except Exception as e:
             logger.warning(f"保存群聊 ID 失败: {e}")
 

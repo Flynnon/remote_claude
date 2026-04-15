@@ -64,7 +64,7 @@ remote-claude lark status
 
 - [CLI 参考](docs/cli-reference.md) — 完整命令、参数与示例
 - [远程连接](docs/remote-connection.md) — 远程启动、attach、connect、token 与远程控制
-- [配置说明](docs/configuration.md) — `settings.json`、`.env` 与连接配置
+- [配置说明](docs/configuration.md) — `settings.json`、`state.json`、`.env` 三类配置入口
 - [飞书配置](docs/feishu-setup.md) — 飞书机器人创建、权限与回调配置
 - [飞书客户端](docs/feishu-client.md) — 飞书客户端启动、状态、日志与排障
 - [Docker 测试](docs/docker-test.md) — npm 安装链路与容器回归测试

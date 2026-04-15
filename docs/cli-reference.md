@@ -129,7 +129,7 @@ remote-claude status <会话名> [选项]
 remote-claude config reset [选项]
 ```
 
-当前公开的 `config` 子命令仅包含 `reset`。
+当前公开的 `config` 子命令仅包含 `reset`；它只重置 `settings.json` / `state.json`，不会删除 `.env`。
 
 **选项**：
 | 选项 | 说明 |

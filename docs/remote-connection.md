@@ -260,19 +260,29 @@ remote-claude attach <session> --remote --host <host> --token <token>
 
 ## 配置文件
 
-远程连接配置存储在 `~/.remote-claude/remote_connections.json`：
+远程连接定义存储在 `~/.remote-claude/settings.json` 的 `remote` 段中；`~/.remote-claude/remote_connections.json` 仅作为历史版本的自动迁移来源，不再是正式配置入口。
+
+示例：
 
 ```json
 {
-  "default": {
-    "host": "example.com",
-    "port": 8765,
-    "token": "your_token_here"
-  },
-  "myserver": {
-    "host": "192.168.1.100",
-    "port": 8765,
-    "token": "another_token"
+  "version": "1.1",
+  "remote": {
+    "default_connection": "default",
+    "connections": {
+      "default": {
+        "name": "default",
+        "host": "example.com",
+        "port": 8765,
+        "token": "your_token_here"
+      },
+      "myserver": {
+        "name": "myserver",
+        "host": "192.168.1.100",
+        "port": 8765,
+        "token": "another_token"
+      }
+    }
   }
 }
 ```

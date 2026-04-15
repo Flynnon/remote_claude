@@ -49,8 +49,10 @@ from utils.runtime_config import (
     get_vague_commands_config,
     increment_ready_notify_count,
     load_settings,
+    set_notify_ready_enabled,
+    set_notify_urgent_enabled,
+    set_bypass_enabled as set_global_bypass_enabled,
 )
-from utils.session import ensure_user_data_dir, USER_DATA_DIR
 
 # ── 常量 ──────────────────────────────────────────────────────────────────────
 INITIAL_WINDOW = 30    # 首次 attach 最多显示最近 30 个 blocks
@@ -712,7 +714,7 @@ class SharedMemoryPoller:
         """更新就绪通知开关状态并持久化"""
         global _notify_enabled
         _notify_enabled = enabled
-        _save_notify_enabled(enabled)
+        set_notify_ready_enabled(enabled)
         logger.info(f"就绪通知开关已{'开启' if enabled else '关闭'}")
 
     def get_urgent_enabled(self) -> bool:
@@ -723,7 +725,7 @@ class SharedMemoryPoller:
         """更新加急通知开关状态并持久化"""
         global _urgent_enabled
         _urgent_enabled = enabled
-        _save_urgent_enabled(enabled)
+        set_notify_urgent_enabled(enabled)
         logger.info(f"加急通知开关已{'开启' if enabled else '关闭'}")
 
     def get_bypass_enabled(self) -> bool:
@@ -734,7 +736,7 @@ class SharedMemoryPoller:
         """更新新会话 bypass 开关状态并持久化"""
         global _bypass_enabled
         _bypass_enabled = enabled
-        _save_bypass_enabled(enabled)
+        set_global_bypass_enabled(enabled)
         logger.info(f"新会话 bypass 开关已{'开启' if enabled else '关闭'}")
 
     def cancel_auto_answer(self, session_name: str) -> None:
@@ -774,12 +776,6 @@ def _is_ready(blocks: list, status_line: Optional[dict], option_block: Optional[
     """数据层就绪判断：无 streaming block、无 status_line（option_block 不影响就绪）"""
     has_streaming = any(b.get("is_streaming", False) for b in blocks)
     return not has_streaming and status_line is None
-
-
-_READY_COUNT_FILE = USER_DATA_DIR / "ready_notify_count"
-_NOTIFY_ENABLED_FILE = USER_DATA_DIR / "ready_notify_enabled"
-_URGENT_ENABLED_FILE = USER_DATA_DIR / "urgent_notify_enabled"
-_BYPASS_ENABLED_FILE = USER_DATA_DIR / "bypass_enabled"
 
 
 def _trim_card_head_by_size(
@@ -822,70 +818,16 @@ def _trim_card_head_by_size(
     return trimmed or blocks_slice[-1:], trim_count
 
 
-def _load_bool_flag(file_path: Path, default: bool) -> bool:
-    """读取布尔开关文件，不存在或解析失败返回默认值"""
-    try:
-        return file_path.read_text().strip() == "1"
-    except Exception:
-        return default
-
-
-def _save_bool_flag(file_path: Path, enabled: bool, label: str) -> None:
-    """持久化布尔开关状态"""
-    try:
-        ensure_user_data_dir()
-        file_path.write_text("1" if enabled else "0")
-    except Exception as e:
-        logger.warning(f"保存{label}开关失败: {e}")
-
-
-def _load_notify_enabled() -> bool:
-    """读取就绪通知开关状态，不存在或解析失败返回 True（默认开启）"""
-    return _load_bool_flag(_NOTIFY_ENABLED_FILE, True)
-
-
-def _save_notify_enabled(enabled: bool) -> None:
-    """持久化就绪通知开关状态"""
-    _save_bool_flag(_NOTIFY_ENABLED_FILE, enabled, "就绪通知")
-
-
-def _load_urgent_enabled() -> bool:
-    """读取加急通知开关状态，不存在或解析失败返回 False（默认关闭）"""
-    return _load_bool_flag(_URGENT_ENABLED_FILE, False)
-
-
-def _save_urgent_enabled(enabled: bool) -> None:
-    """持久化加急通知开关状态"""
-    _save_bool_flag(_URGENT_ENABLED_FILE, enabled, "加急通知")
-
-
-def _load_bypass_enabled() -> bool:
-    """读取新会话 bypass 开关状态，不存在或解析失败返回 False（默认关闭）"""
-    return _load_bool_flag(_BYPASS_ENABLED_FILE, False)
-
-
-def _save_bypass_enabled(enabled: bool) -> None:
-    """持久化新会话 bypass 开关状态"""
-    _save_bool_flag(_BYPASS_ENABLED_FILE, enabled, "新会话 bypass")
-
-
-# 模块级开关状态：启动时加载一次
-_notify_enabled: bool = _load_notify_enabled()
-_urgent_enabled: bool = _load_urgent_enabled()
-_bypass_enabled: bool = _load_bypass_enabled()
+# 模块级开关状态：启动时从 settings/state 加载一次
+_notify_enabled: bool = get_notify_ready_enabled()
+_urgent_enabled: bool = get_notify_urgent_enabled()
+_bypass_enabled: bool = get_bypass_enabled()
 
 
 def _increment_ready_count() -> int:
-    """原子递增全局就绪提醒计数器，返回新值（持久化到文件）"""
+    """原子递增全局就绪提醒计数器，返回新值。"""
     try:
-        ensure_user_data_dir()
-        try:
-            count = int(_READY_COUNT_FILE.read_text().strip())
-        except Exception:
-            count = 0
-        count += 1
-        _READY_COUNT_FILE.write_text(str(count))
-        return count
+        return increment_ready_notify_count()
     except Exception as e:
         logger.warning(f"_increment_ready_count 失败: {e}")
         return 1

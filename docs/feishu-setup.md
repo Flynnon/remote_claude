@@ -1,238 +1,158 @@
 # 飞书机器人配置教程
 
-本教程介绍如何配置飞书企业自建应用，实现 Remote Claude 的飞书端操作功能。
+本教程介绍如何通过配置向导完成 Remote Claude 的飞书端接入，并按当前实现所需的最小权限集完成开放平台配置。
 
 ## 前提条件
 
-- 飞书企业管理员权限
 - 已安装并配置好 Remote Claude
+- 本机可运行 `remote-claude` 命令
+- 具备目标飞书应用的配置权限
 
-## 步骤一：创建飞书应用
+## 推荐方式：使用配置向导
 
-1. 登录 [飞书开放平台](https://open.feishu.cn/)
-2. 点击「创建企业自建应用」
-3. 填写应用名称和描述，例如：
-   - 应用名称：`Remote Claude`
-   - 应用描述：`远程操作 Claude Code 的飞书机器人`
-4. 选择应用图标，点击「创建」
-
-## 步骤二：获取应用凭证
-
-创建完成后，在应用详情页可以看到：
-
-- **App ID**：应用的唯一标识
-- **App Secret**：应用的密钥
-
-将这两个值配置到 Remote Claude：
+推荐直接运行：
 
 ```bash
-# 创建配置文件
-mkdir -p ~/.remote-claude
-cat > ~/.remote-claude/.env << 'EOF'
-FEISHU_APP_ID=your_app_id
-FEISHU_APP_SECRET=your_app_secret
-EOF
-
-# 设置文件权限
-chmod 600 ~/.remote-claude/.env
+remote-claude lark init
 ```
 
-或者在首次启动时按提示输入：
+向导会依次完成以下流程：
+
+1. 扫码创建飞书应用
+2. 校验 App ID / App Secret 是否有效
+3. 打开应用身份权限开通页面
+4. 通过 OAuth device flow 引导用户身份授权
+5. 引导创建版本并发布应用
+6. 将凭证写入 `~/.remote-claude/.env`
+
+完成后可使用以下命令复查配置状态：
+
+```bash
+remote-claude lark init --check
+```
+
+## 向导外你需要确认的开放平台配置
+
+虽然向导会帮助打开关键页面，但以下配置仍需要你在飞书开放平台中确认。
+
+### 1. 启用机器人能力
+
+在应用后台启用「机器人」能力。
+
+### 2. 配置事件订阅
+
+当前实现使用**长连接接收事件**模式，不需要公网 webhook 地址。
+
+需要开启以下事件：
+
+- `im.message.receive_v1`
+- `card.action.trigger`
+
+### 3. 开通最小权限集
+
+在「权限管理」页面申请以下最小权限：
+
+- `cardkit:card:write`
+- `contact:contact.base:readonly`
+- `contact:user.base:readonly`
+- `contact:user.employee_id:readonly`
+- `contact:user.id:readonly`
+- `im:chat.managers:write_only`
+- `im:chat.members:read`
+- `im:chat.members:write_only`
+- `im:chat.tabs:read`
+- `im:chat.tabs:write_only`
+- `im:chat.top_notice:write_only`
+- `im:chat:create`
+- `im:chat:delete`
+- `im:chat:operate_as_owner`
+- `im:chat:read`
+- `im:chat:update`
+- `im:message.group_at_msg:readonly`
+- `im:message.group_msg`
+- `im:message.p2p_msg:readonly`
+- `im:message.reactions:read`
+- `im:message.reactions:write_only`
+- `im:message.urgent`
+- `im:message.urgent.status:write`
+- `im:message:readonly`
+- `im:message:recall`
+- `im:message:send_as_bot`
+- `im:message:update`
+- `im:message:urgent_app`
+- `im:resource`
+
+其中：
+
+- OAuth 用户授权会预选其中用于 device flow 的权限，并额外申请 `offline_access`
+- 应用身份权限开通链接会包含 tenant scope 所需权限
+- 手工 checklist 以当前实现实际依赖的最小权限集为准
+
+### 4. 创建版本并发布应用
+
+应用未发布前，飞书侧无法正常搜索和使用该机器人。
+
+## 检查配置是否生效
+
+运行：
+
+```bash
+remote-claude lark init --check
+```
+
+检查逻辑包括：
+
+1. `~/.remote-claude/.env` 中是否存在 `FEISHU_APP_ID` 与 `FEISHU_APP_SECRET`
+2. 应用凭证是否能正常换取 `tenant_access_token`
+3. 是否能够获取机器人信息
+
+如果检查失败，向导会重新打印需要补齐的开放平台配置项。
+
+## 启动飞书客户端
 
 ```bash
 remote-claude lark start
-# 系统会提示输入 App ID 和 App Secret
 ```
 
-## 步骤三：配置应用能力
-
-### 添加机器人能力
-
-1. 在应用管理页面，点击「应用能力」
-2. 点击「添加应用能力」
-3. 选择「机器人」，启用机器人功能
-
-### 配置事件订阅
-
-1. 点击「事件订阅」
-2. 配置请求网址（需要公网可访问的地址）：
-   ```
-   https://your-server.com/webhook
-   ```
-3. 添加以下事件：
-   - `接收消息 v2.0`（im.message.receive_v1）
-   - `卡片回传交互`（card.action.trigger）
-
-### 配置权限
-
-在「权限管理」页面，添加以下权限：
-
-**消息权限：**
-- `im:message` - 获取与发送单聊、群组消息
-- `im:message:send_as_bot` - 以应用身份发消息
-- `im:message.p2p_msg` - 获取用户发给机器人的单聊消息
-- `im:message.p2p_msg:readonly` - 读取用户发给机器人的单聊消息
-
-**卡片权限：**
-- `card:card` - 使用卡片能力
-- `card:card:readonly` - 获取卡片信息
-
-**用户权限：**
-- `contact:user.base:readonly` - 获取用户基本信息
-
-完整权限列表参见 [feishu-permissions.json](./feishu-permissions.json)。
-
-## 步骤四：发布应用
-
-1. 在应用管理页面，点击「版本管理与发布」
-2. 点击「创建版本」
-3. 填写版本号和更新说明
-4. 点击「保存并发布」
-5. 等待审核通过（企业管理员审批）
-
-## 步骤五：使用机器人
-
-### 启动飞书客户端
+常用辅助命令：
 
 ```bash
-# 启动
-remote-claude lark start
-
-# 查看状态
 remote-claude lark status
+remote-claude lark stop
 ```
-
-### 在飞书中使用
-
-1. 在飞书搜索框中搜索你的机器人名称
-2. 发送 `/menu` 打开功能菜单
-3. 可用命令：
-   - `/menu` - 显示功能菜单
-   - `/attach <会话名>` - 连接到会话
-   - `/detach` - 断开会话连接
-   - `/list` - 列出所有会话
-   - `/help` - 显示帮助信息
-
-如需先用指定启动器创建会话，可使用：
-
-```bash
-remote-claude start my-session --launcher Codex
-```
-
-## 事件回调配置详解
-
-### 本地开发环境
-
-如果需要在本地开发测试，可以使用内网穿透工具：
-
-**使用 ngrok：**
-
-```bash
-# 安装 ngrok
-brew install ngrok
-
-# 启动内网穿透
-ngrok http 8080
-
-# 将生成的 URL 配置到飞书事件订阅
-# 例如：https://xxx.ngrok.io/webhook
-```
-
-**使用 frp：**
-
-```bash
-# frp 客户端配置
-[web]
-type = http
-local_port = 8080
-custom_domains = your-domain.com
-```
-
-### 生产环境
-
-生产环境建议配置：
-
-1. **HTTPS**：必须使用 HTTPS 协议
-2. **域名**：使用稳定的域名
-3. **负载均衡**：多实例部署时配置负载均衡
 
 ## 常见问题
 
-### 机器人无响应
+### `remote-claude lark init --check` 失败
 
-**检查清单：**
+优先检查：
 
-1. 飞书客户端是否正常运行
-   ```bash
-   remote-claude lark status
-   ```
+1. `.env` 中的 App ID / App Secret 是否正确
+2. 机器人能力是否已启用
+3. 事件订阅是否已切换为长连接模式并添加所需事件
+4. 应用是否已经发布
+5. 权限是否覆盖了上面的最小权限集
 
-2. 应用凭证是否正确
-   ```bash
-   cat ~/.remote-claude/.env
-   ```
+### 飞书里搜不到机器人
 
-3. 事件订阅是否配置正确
-   - 检查请求网址是否可访问
-   - 检查是否添加了必要的事件
+通常是因为应用尚未发布，或者发布流程未完成。
 
-4. 权限是否完整
-   - 对照权限列表检查是否遗漏
+### 消息或卡片能力异常
 
-### 消息发送失败
-
-**可能原因：**
-
-1. 应用未发布或未启用
-2. 用户未与机器人建立单聊会话
-3. 权限不足
-
-**解决方案：**
+通常是权限不完整，或事件订阅未正确配置。建议重新执行：
 
 ```bash
-# 查看日志
-tail -f ~/.remote-claude/logs/lark_client.log
-
-# 重启客户端
-remote-claude lark restart
-```
-
-### 卡片更新失败
-
-**可能原因：**
-
-1. 卡片 token 过期
-2. 卡片内容过长
-
-**解决方案：**
-
-在配置中启用卡片过期功能：
-
-```json
-{
-  "card": {
-    "expiry_sec": 3600
-  }
-}
+remote-claude lark init --check
 ```
 
 ## 安全建议
 
-1. **保护凭证**：
-   - 不要将 App Secret 提交到代码仓库
-   - 定期轮换 App Secret
-
-2. **限制权限**：
-   - 只申请必要的权限
-   - 遵循最小权限原则
-
-3. **监控日志**：
-   - 定期检查异常访问
-   - 设置告警机制
+1. 不要将 `FEISHU_APP_SECRET` 提交到代码仓库
+2. 仅申请当前实现实际需要的最小权限
+3. 如需轮换凭证，重新执行 `remote-claude lark init`
 
 ## 相关文档
 
-- [飞书开放平台文档](https://open.feishu.cn/document/)
-- [飞书卡片开发指南](https://open.larkoffice.com/document/feishu-cards/card-json-v2-structure)
-- [配置说明](./configuration.md)
 - [飞书客户端管理](./feishu-client.md)
+- [配置说明](./configuration.md)
+- [历史权限清单（扩展范围参考）](./feishu-permissions.json)

@@ -6,10 +6,9 @@ Remote Claude 使用 JSON 格式的配置文件，支持会话管理、卡片展
 
 | 文件 | 用途 |
 |------|------|
-| `~/.remote-claude/settings.json` | 用户设置（启动器、卡片、会话等） |
-| `~/.remote-claude/state.json` | 运行时状态（会话映射、飞书绑定） |
+| `~/.remote-claude/settings.json` | 用户设置（启动器、卡片、会话、远程连接定义等） |
+| `~/.remote-claude/state.json` | 运行时状态（会话映射、飞书绑定、计数器等） |
 | `~/.remote-claude/.env` | 环境变量（飞书凭证等） |
-| `~/.remote-claude/remote_connections.json` | 远程连接配置（host、port、token） |
 
 `settings.json` 与 `state.json` 的默认模板来源分别是：
 
@@ -29,7 +28,8 @@ Remote Claude 使用 JSON 格式的配置文件，支持会话管理、卡片展
   "card": { ... },
   "session": { ... },
   "notify": { ... },
-  "ui": { ... }
+  "ui": { ... },
+  "remote": { ... }
 }
 ```
 
@@ -142,6 +142,44 @@ Remote Claude 使用 JSON 格式的配置文件，支持会话管理、卡片展
 | `show_builtin_keys` | boolean | 是否显示内置快捷键 |
 | `enabled_keys` | array | 启用的快捷键列表，默认值为 `up`、`down`、`ctrl_o`、`shift_tab`、`esc`、`shift_tab_x3` |
 
+### remote - 远程连接配置
+
+远程连接定义统一保存在 `settings.json` 的 `remote` 段中；旧版 `remote_connections.json` 仅在升级时作为自动迁移来源，不再是正式配置入口。
+
+```json
+{
+  "remote": {
+    "default_connection": "default",
+    "connections": {
+      "default": {
+        "name": "default",
+        "host": "example.com",
+        "port": 8765,
+        "token": "your_token_here",
+        "session": "demo",
+        "description": "生产机",
+        "created_at": "2026-04-15T12:00:00",
+        "last_used": "2026-04-15T12:30:00",
+        "is_default": true
+      }
+    }
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `default_connection` | string | 默认连接名称；为空表示未显式指定 |
+| `connections` | object | 已保存的远程连接定义，key 为配置名 |
+| `connections.<name>.host` | string | 远程主机地址 |
+| `connections.<name>.port` | number | 远程端口 |
+| `connections.<name>.token` | string | 远程连接 token |
+| `connections.<name>.session` | string | 默认会话名（可选） |
+| `connections.<name>.description` | string | 配置描述（可选） |
+| `connections.<name>.created_at` | string | 首次保存时间（ISO8601） |
+| `connections.<name>.last_used` | string | 最近使用时间（ISO8601） |
+| `connections.<name>.is_default` | boolean | 是否为默认连接 |
+
 ## 环境变量配置
 
 在 `~/.remote-claude/.env` 中配置：
@@ -175,11 +213,13 @@ LARK_NO_PROXY=0
 
 ## 配置重置
 
+`remote-claude config reset` 只会重置 `settings.json` 与 `state.json`，不会删除 `.env`。
+
 ```bash
 # 交互式重置
 remote-claude config reset
 
-# 重置所有配置（包括运行时状态）
+# 重置所有配置（settings.json + state.json）
 remote-claude config reset --all
 
 # 仅重置用户配置
@@ -226,6 +266,10 @@ remote-claude config reset --state
   "ui": {
     "show_builtin_keys": true,
     "enabled_keys": ["up", "down", "ctrl_o", "shift_tab", "esc", "shift_tab_x3"]
+  },
+  "remote": {
+    "default_connection": "",
+    "connections": {}
   }
 }
 ```

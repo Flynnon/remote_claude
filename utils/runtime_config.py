@@ -15,12 +15,14 @@ import json
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+import copy
 
 from server.biz_enum import CliType
 
@@ -477,6 +479,71 @@ class UiSettings:
 
 
 @dataclass
+class RemoteConnection:
+    """远程连接配置"""
+    name: str = ""
+    host: str = ""
+    port: int = 8765
+    token: str = ""
+    session: str = ""
+    description: str = ""
+    created_at: str = ""
+    last_used: str = ""
+    is_default: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "host": self.host,
+            "port": self.port,
+            "token": self.token,
+            "session": self.session,
+            "description": self.description,
+            "created_at": self.created_at,
+            "last_used": self.last_used,
+            "is_default": self.is_default,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RemoteConnection":
+        return cls(
+            name=data.get("name", ""),
+            host=data.get("host", ""),
+            port=data.get("port", 8765),
+            token=data.get("token", ""),
+            session=data.get("session", ""),
+            description=data.get("description", ""),
+            created_at=data.get("created_at", ""),
+            last_used=data.get("last_used", ""),
+            is_default=data.get("is_default", False),
+        )
+
+
+@dataclass
+class RemoteSettings:
+    """远程连接设置"""
+    default_connection: str = ""
+    connections: Dict[str, RemoteConnection] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "default_connection": self.default_connection,
+            "connections": {name: conn.to_dict() for name, conn in self.connections.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RemoteSettings":
+        connections_data = data.get("connections", {})
+        connections = {}
+        for name, conn_data in connections_data.items():
+            connections[name] = RemoteConnection.from_dict(conn_data)
+        return cls(
+            default_connection=data.get("default_connection", ""),
+            connections=connections,
+        )
+
+
+@dataclass
 class Settings:
     """用户设置"""
     version: str = SETTINGS_CURRENT_VERSION
@@ -485,6 +552,7 @@ class Settings:
     session: SessionSettings = field(default_factory=lambda: SessionSettings())
     notify: NotifySettings = field(default_factory=lambda: NotifySettings())
     ui: UiSettings = field(default_factory=lambda: UiSettings())
+    remote: RemoteSettings = field(default_factory=lambda: RemoteSettings())
 
     def get_launcher(self, name: str) -> Optional[Launcher]:
         """根据名称获取启动器"""
@@ -513,6 +581,7 @@ class Settings:
             "session": self.session.to_dict(),
             "notify": self.notify.to_dict(),
             "ui": self.ui.to_dict(),
+            "remote": self.remote.to_dict(),
         }
 
     @classmethod
@@ -532,6 +601,7 @@ class Settings:
             session=SessionSettings.from_dict(data.get("session", {})),
             notify=NotifySettings.from_dict(data.get("notify", {})),
             ui=UiSettings.from_dict(data.get("ui", {})),
+            remote=RemoteSettings.from_dict(data.get("remote", {})),
         )
 
 
@@ -562,12 +632,33 @@ class SessionState:
 
 
 @dataclass
+class LarkState:
+    """飞书运行态"""
+    chat_bindings: Dict[str, str] = field(default_factory=dict)
+    group_chat_ids: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "chat_bindings": self.chat_bindings,
+            "group_chat_ids": self.group_chat_ids,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LarkState":
+        return cls(
+            chat_bindings=dict(data.get("chat_bindings", {})),
+            group_chat_ids=list(data.get("group_chat_ids", [])),
+        )
+
+
+@dataclass
 class State:
     """运行时状态"""
     version: str = STATE_CURRENT_VERSION
     uv_path: Optional[str] = None
     sessions: Dict[str, SessionState] = field(default_factory=dict)
     ready_notify_count: int = 0
+    lark: LarkState = field(default_factory=lambda: LarkState())
 
     def get_session_path(self, session_name: str) -> Optional[str]:
         """获取会话路径"""
@@ -605,6 +696,7 @@ class State:
             "uv_path": self.uv_path,
             "sessions": {k: v.to_dict() for k, v in self.sessions.items()},
             "ready_notify_count": self.ready_notify_count,
+            "lark": self.lark.to_dict(),
         }
 
     @classmethod
@@ -616,6 +708,7 @@ class State:
             uv_path=data.get("uv_path"),
             sessions=sessions,
             ready_notify_count=data.get("ready_notify_count", 0),
+            lark=LarkState.from_dict(data.get("lark", {})),
         )
 
 
@@ -766,6 +859,203 @@ def load_state() -> State:
 def save_state(state: State) -> None:
     """保存运行时状态"""
     _save_config_with_lock(state, STATE_FILE, STATE_LOCK_FILE)
+
+
+def list_remote_connections(settings: Optional[Settings] = None) -> List[RemoteConnection]:
+    cfg = settings or load_settings()
+    return list(cfg.remote.connections.values())
+
+
+def get_remote_connection(name: str, settings: Optional[Settings] = None) -> Optional[RemoteConnection]:
+    cfg = settings or load_settings()
+    conn = cfg.remote.connections.get(name)
+    return copy.deepcopy(conn) if conn else None
+
+
+def get_default_remote_connection(settings: Optional[Settings] = None) -> Optional[RemoteConnection]:
+    cfg = settings or load_settings()
+    if cfg.remote.default_connection:
+        conn = cfg.remote.connections.get(cfg.remote.default_connection)
+        if conn:
+            return copy.deepcopy(conn)
+    for conn in cfg.remote.connections.values():
+        if conn.is_default:
+            return copy.deepcopy(conn)
+    first = next(iter(cfg.remote.connections.values()), None)
+    return copy.deepcopy(first) if first else None
+
+
+def save_remote_connection(
+        name: str,
+        host: str,
+        port: int,
+        token: str,
+        session: str = "",
+        description: str = "",
+        is_default: bool = False,
+) -> RemoteConnection:
+    now_str = datetime.now().isoformat()
+
+    def mutator(settings: Settings):
+        existing = settings.remote.connections.get(name)
+        created_at = existing.created_at if existing and existing.created_at else now_str
+        if is_default:
+            settings.remote.default_connection = name
+        elif settings.remote.default_connection == name and existing and not existing.is_default:
+            settings.remote.default_connection = ""
+        for conn_name, conn in settings.remote.connections.items():
+            conn.is_default = False if is_default else conn.is_default
+            if is_default and conn_name != name:
+                conn.is_default = False
+        new_conn = RemoteConnection(
+            name=name,
+            host=host,
+            port=port,
+            token=token,
+            session=session,
+            description=description,
+            created_at=created_at,
+            last_used=now_str,
+            is_default=is_default,
+        )
+        settings.remote.connections[name] = new_conn
+        if is_default or not settings.remote.default_connection:
+            settings.remote.default_connection = name
+        return copy.deepcopy(new_conn)
+
+    return _update_config_with_lock(
+        SETTINGS_FILE,
+        SETTINGS_LOCK_FILE,
+        load_settings,
+        Settings,
+        mutator,
+    )
+
+
+def touch_remote_connection(name: str) -> Optional[RemoteConnection]:
+    def mutator(settings: Settings):
+        conn = settings.remote.connections.get(name)
+        if not conn:
+            return None
+        conn.last_used = datetime.now().isoformat()
+        return copy.deepcopy(conn)
+
+    return _update_config_with_lock(
+        SETTINGS_FILE,
+        SETTINGS_LOCK_FILE,
+        load_settings,
+        Settings,
+        mutator,
+    )
+
+
+def delete_remote_connection(name: str) -> bool:
+    def mutator(settings: Settings):
+        if name not in settings.remote.connections:
+            return False
+        del settings.remote.connections[name]
+        if settings.remote.default_connection == name:
+            settings.remote.default_connection = next(iter(settings.remote.connections.keys()), "")
+            if settings.remote.default_connection:
+                settings.remote.connections[settings.remote.default_connection].is_default = True
+        return True
+
+    return _update_config_with_lock(
+        SETTINGS_FILE,
+        SETTINGS_LOCK_FILE,
+        load_settings,
+        Settings,
+        mutator,
+    )
+
+
+def set_default_remote_connection(name: str) -> bool:
+    def mutator(settings: Settings):
+        if name not in settings.remote.connections:
+            return False
+        settings.remote.default_connection = name
+        for conn_name, conn in settings.remote.connections.items():
+            conn.is_default = conn_name == name
+        return True
+
+    return _update_config_with_lock(
+        SETTINGS_FILE,
+        SETTINGS_LOCK_FILE,
+        load_settings,
+        Settings,
+        mutator,
+    )
+
+
+def migrate_legacy_lark_chat_bindings_file(legacy_file: Path, target_file: Path) -> None:
+    if target_file.exists() or not legacy_file.exists():
+        return
+    ensure_user_data_dir()
+    shutil.move(str(legacy_file), str(target_file))
+
+
+def import_legacy_lark_chat_bindings(bindings_file: Path) -> Dict[str, str]:
+    if not bindings_file.exists():
+        return {}
+    bindings = json.loads(bindings_file.read_text(encoding="utf-8"))
+    if not isinstance(bindings, dict):
+        return {}
+    save_lark_chat_bindings(bindings)
+    return dict(bindings)
+
+
+def get_lark_chat_bindings(state: Optional[State] = None) -> Dict[str, str]:
+    current = state or load_state()
+    return dict(current.lark.chat_bindings)
+
+
+def save_lark_chat_bindings(bindings: Dict[str, str]) -> None:
+    def mutator(state: State):
+        state.lark.chat_bindings = dict(bindings)
+        return None
+
+    _update_config_with_lock(
+        STATE_FILE,
+        STATE_LOCK_FILE,
+        load_state,
+        State,
+        mutator,
+    )
+
+
+def import_legacy_lark_group_chat_ids(group_ids_file: Path) -> List[str]:
+    if not group_ids_file.exists():
+        return []
+    group_chat_ids = json.loads(group_ids_file.read_text(encoding="utf-8"))
+    if not isinstance(group_chat_ids, list):
+        return []
+    save_lark_group_chat_ids(group_chat_ids)
+    return list(dict.fromkeys(group_chat_ids))
+
+
+def get_lark_group_chat_ids(state: Optional[State] = None) -> List[str]:
+    current = state or load_state()
+    return list(current.lark.group_chat_ids)
+
+
+def save_lark_group_chat_ids(group_chat_ids: List[str]) -> None:
+    def mutator(state: State):
+        deduped = []
+        seen = set()
+        for chat_id in group_chat_ids:
+            if chat_id not in seen:
+                seen.add(chat_id)
+                deduped.append(chat_id)
+        state.lark.group_chat_ids = deduped
+        return None
+
+    _update_config_with_lock(
+        STATE_FILE,
+        STATE_LOCK_FILE,
+        load_state,
+        State,
+        mutator,
+    )
 
 
 # ============== 向后兼容辅助函数 ==============

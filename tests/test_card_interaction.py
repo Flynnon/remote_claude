@@ -773,3 +773,74 @@ def test_main_routes_stream_attach_existing(mock_create_task):
     assert mock_create_task.called
 
 
+@patch("lark_client.lark_handler.get_lark_chat_bindings", return_value={"chat_state": "session-state"})
+@patch("lark_client.lark_handler.get_lark_group_chat_ids", return_value=["group-1"])
+def test_lark_handler_prefers_state_bindings_over_legacy_files(_mock_groups, _mock_bindings):
+    from lark_client.lark_handler import LarkHandler
+
+    with patch.object(LarkHandler, "_CHAT_BINDINGS_FILE", new=MagicMock(exists=MagicMock(return_value=True))), \
+            patch.object(LarkHandler, "_LARK_GROUP_IDS_FILE", new=MagicMock(exists=MagicMock(return_value=True))), \
+            patch("lark_client.lark_handler.import_legacy_lark_chat_bindings", side_effect=AssertionError("不应读取 legacy 文件")), \
+            patch("lark_client.lark_handler.import_legacy_lark_group_chat_ids", side_effect=AssertionError("不应读取 legacy 文件")):
+        handler = LarkHandler()
+
+    assert handler._chat_bindings == {"chat_state": "session-state"}
+    assert handler._group_chat_ids == {"group-1"}
+
+
+@patch("lark_client.lark_handler.get_lark_chat_bindings", return_value={"chat_state": "session-state"})
+@patch("lark_client.lark_handler.get_lark_group_chat_ids", return_value=["group-state"])
+def test_lark_handler_reads_bindings_only_from_state_helpers(_mock_groups, _mock_bindings):
+    from lark_client.lark_handler import LarkHandler
+
+    with patch.object(LarkHandler, "_CHAT_BINDINGS_FILE", new=MagicMock(exists=MagicMock(return_value=True))), \
+            patch.object(LarkHandler, "_LARK_GROUP_IDS_FILE", new=MagicMock(exists=MagicMock(return_value=True))), \
+            patch("lark_client.lark_handler.import_legacy_lark_chat_bindings", side_effect=AssertionError("不应读取 legacy 文件")), \
+            patch("lark_client.lark_handler.import_legacy_lark_group_chat_ids", side_effect=AssertionError("不应读取 legacy 文件")):
+        handler = LarkHandler()
+
+    assert handler._chat_bindings == {"chat_state": "session-state"}
+    assert handler._group_chat_ids == {"group-state"}
+
+
+@patch("lark_client.lark_handler.get_lark_chat_bindings", return_value={})
+@patch("lark_client.lark_handler.get_lark_group_chat_ids", return_value=[])
+@patch("lark_client.lark_handler.migrate_legacy_lark_chat_bindings_file")
+def test_lark_handler_delegates_tmp_binding_file_migration_to_runtime_config(
+        mock_migrate, _mock_groups, _mock_bindings):
+    from lark_client.lark_handler import LarkHandler
+
+    missing_group_file = MagicMock()
+    missing_group_file.exists.return_value = False
+
+    with patch.object(LarkHandler, "_LARK_GROUP_IDS_FILE", new=missing_group_file):
+        LarkHandler()
+
+    mock_migrate.assert_called_once()
+
+
+@patch("lark_client.lark_handler.save_lark_chat_bindings")
+def test_lark_handler_save_chat_bindings_writes_state_helper(mock_save_bindings):
+    from lark_client.lark_handler import LarkHandler
+
+    handler = LarkHandler()
+    handler._chat_bindings = {"chat_x": "session-x"}
+
+    handler._save_chat_bindings()
+
+    mock_save_bindings.assert_called_with({"chat_x": "session-x"})
+
+
+@patch("lark_client.lark_handler.save_lark_group_chat_ids")
+def test_lark_handler_save_group_chat_ids_writes_state_helper(mock_save_groups):
+    from lark_client.lark_handler import LarkHandler
+
+    handler = LarkHandler()
+    handler._group_chat_ids = {"group-b", "group-a"}
+
+    handler._save_group_chat_ids()
+
+    saved_groups = mock_save_groups.call_args.args[0]
+    assert set(saved_groups) == {"group-a", "group-b"}
+
+

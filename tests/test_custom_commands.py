@@ -204,6 +204,17 @@ def test_package_json_includes_public_docs_but_not_superpowers_docs():
     assert "docs/superpowers/**" not in files
 
 
+def test_package_json_includes_postinstall_script_in_packed_files():
+    package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
+    files = package["files"]
+    npmignore = (REPO_ROOT / ".npmignore").read_text(encoding="utf-8")
+
+    assert "scripts/postinstall.sh" in files
+    assert "!scripts/postinstall.sh" in npmignore
+    assert "!scripts/preinstall.sh" in npmignore
+    assert "!scripts/uninstall.sh" in npmignore
+
+
 def test_remote_list_does_not_require_session_name():
     from remote_claude import validate_remote_args
 
@@ -258,6 +269,49 @@ def test_cmd_uninstall_passes_yes_flag_to_shell(monkeypatch):
     remote_claude.cmd_uninstall(args)
 
     assert called["cmd"][-1] == "--yes"
+
+
+def test_cmd_config_help_mentions_reset_scope(capsys):
+    result = remote_claude.cmd_config(SimpleNamespace())
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "settings.json + state.json" in out
+    assert "仅重置用户配置（settings.json）" in out
+    assert "仅重置运行时配置（state.json）" in out
+
+
+def test_cmd_config_reset_interactive_choice_3_resets_only_state(monkeypatch, tmp_path, capsys):
+    user_data_dir = tmp_path / "user-data"
+    user_data_dir.mkdir()
+    settings_file = user_data_dir / "settings.json"
+    state_file = user_data_dir / "state.json"
+    settings_lock_file = user_data_dir / "settings.json.lock"
+    state_lock_file = user_data_dir / "state.json.lock"
+    env_file = user_data_dir / ".env"
+    settings_file.write_text('{"version":"1.1","keep":"settings"}', encoding="utf-8")
+    state_file.write_text('{"version":"1.1","keep":"state"}', encoding="utf-8")
+    env_file.write_text("FEISHU_APP_ID=keep\n", encoding="utf-8")
+
+    defaults_dir = remote_claude.SCRIPT_DIR / "resources" / "defaults"
+    expected_state = (defaults_dir / "state.json.example").read_text(encoding="utf-8")
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "3")
+    monkeypatch.setattr("utils.runtime_config.USER_DATA_DIR", user_data_dir)
+    monkeypatch.setattr("utils.runtime_config.SETTINGS_FILE", settings_file)
+    monkeypatch.setattr("utils.runtime_config.STATE_FILE", state_file)
+    monkeypatch.setattr("utils.runtime_config.SETTINGS_LOCK_FILE", settings_lock_file)
+    monkeypatch.setattr("utils.runtime_config.STATE_LOCK_FILE", state_lock_file)
+
+    result = remote_claude.cmd_config_reset(SimpleNamespace(all=False, settings_only=False, state_only=False))
+
+    assert result == 0
+    assert settings_file.read_text(encoding="utf-8") == '{"version":"1.1","keep":"settings"}'
+    assert state_file.read_text(encoding="utf-8") == expected_state
+    assert env_file.read_text(encoding="utf-8") == "FEISHU_APP_ID=keep\n"
+    out = capsys.readouterr().out
+    assert "已重置运行时配置" in out
+    assert "已重置用户配置" not in out
 
 
 

@@ -10,9 +10,10 @@
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 logger = logging.getLogger('EnvConfig')
 
@@ -71,26 +72,14 @@ class EnvConfig:
     @classmethod
     def from_env_file(cls, path: Path = ENV_FILE) -> "EnvConfig":
         """从 .env 文件加载配置"""
-        if not path.exists():
-            return cls()
-
-        env_vars: dict = {}
-        with open(path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if '=' in line:
-                    key, value = line.split('=', 1)
-                    env_vars[key.strip()] = value.strip()
-
+        env_vars = _read_env_file(path)
         return cls(
             feishu_app_id=env_vars.get('FEISHU_APP_ID', ''),
             feishu_app_secret=env_vars.get('FEISHU_APP_SECRET', ''),
             allowed_users=_parse_list(_get_env_value(env_vars, 'ALLOWED_USERS', '')),
             enable_user_whitelist=_parse_bool(_get_env_value(env_vars, 'ENABLE_USER_WHITELIST', 'false')),
             group_name_prefix=_get_env_value(env_vars, 'GROUP_NAME_PREFIX', 'Remote-Claude'),
-            lark_log_level=_get_env_value(env_vars, 'LARK_LOG_LEVEL', 'INFO'),
+            lark_log_level=_get_env_value(env_vars, 'LARK_LOG_LEVEL', 'WARNING'),
             startup_timeout=int(env_vars.get('STARTUP_TIMEOUT', '5')),
             max_card_blocks=int(env_vars.get('MAX_CARD_BLOCKS', '50')),
             lark_no_proxy=_parse_bool(_get_env_value(env_vars, 'LARK_NO_PROXY', '0')),
@@ -126,9 +115,64 @@ def _get_env_value(env_vars: dict, key: str, default: str = '') -> str:
     return default
 
 
-def load_env_config() -> EnvConfig:
+def _read_env_file(path: Path) -> dict:
+    """读取 .env 文件为键值映射"""
+    if not path.exists():
+        return {}
+
+    env_vars: dict = {}
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' in line:
+                key, value = line.split('=', 1)
+                env_vars[key.strip()] = value.strip()
+    return env_vars
+
+
+def _merge_env_sources(file_env: dict, environ: dict) -> dict:
+    """合并 .env 与进程环境变量，保持新字段优先于 alias"""
+    merged = dict(file_env)
+    all_keys = set(file_env.keys()) | set(environ.keys())
+
+    for key in all_keys:
+        if key in _ENV_ALIASES or any(key in aliases for aliases in _ENV_ALIASES.values()):
+            continue
+        if key in environ:
+            merged[key] = environ[key]
+
+    for key in _ENV_ALIASES:
+        if key in environ:
+            merged[key] = environ[key]
+            for alias in _ENV_ALIASES.get(key, ()):
+                merged.pop(alias, None)
+            continue
+        for alias in _ENV_ALIASES.get(key, ()):
+            if alias in environ:
+                merged[key] = environ[alias]
+                merged.pop(alias, None)
+                break
+
+    return merged
+
+
+def load_env_config(path: Path = ENV_FILE) -> EnvConfig:
     """加载环境变量配置"""
-    return EnvConfig.from_env_file()
+    file_env = _read_env_file(path)
+    merged_env = _merge_env_sources(file_env, dict(os.environ))
+    return EnvConfig(
+        feishu_app_id=merged_env.get('FEISHU_APP_ID', ''),
+        feishu_app_secret=merged_env.get('FEISHU_APP_SECRET', ''),
+        allowed_users=_parse_list(_get_env_value(merged_env, 'ALLOWED_USERS', '')),
+        enable_user_whitelist=_parse_bool(_get_env_value(merged_env, 'ENABLE_USER_WHITELIST', 'false')),
+        group_name_prefix=_get_env_value(merged_env, 'GROUP_NAME_PREFIX', 'Remote-Claude'),
+        lark_log_level=_get_env_value(merged_env, 'LARK_LOG_LEVEL', 'WARNING'),
+        startup_timeout=int(merged_env.get('STARTUP_TIMEOUT', '5')),
+        max_card_blocks=int(merged_env.get('MAX_CARD_BLOCKS', '50')),
+        lark_no_proxy=_parse_bool(_get_env_value(merged_env, 'LARK_NO_PROXY', '0')),
+    )
 
 
 def save_env_config(config: EnvConfig) -> None:

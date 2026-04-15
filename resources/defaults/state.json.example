@@ -2,5 +2,9 @@
   "version": "1.1",
   "uv_path": null,
   "sessions": {},
-  "ready_notify_count": 0
+  "ready_notify_count": 0,
+  "lark": {
+    "chat_bindings": {},
+    "group_chat_ids": []
+  }
 }
