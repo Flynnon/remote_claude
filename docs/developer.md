@@ -24,7 +24,7 @@ Remote Claude 是共享 Claude/Codex CLI 会话的双端工具：本地会话运
 - `server/server.py`：PTY → parser → snapshot → shared memory 主链路，负责 PTY 代理、输出广播、远程连接与终端状态恢复
 - `client/`：本地 Unix Socket / 远程 WebSocket 客户端
 - `server/ws_handler.py`：WebSocket 鉴权、远程控制动作与远程 Lark 管理入口
-- `lark_client/main.py`：飞书消息与卡片交互入口
+- `lark_client/main.py` / `lark_client/lark_handler.py`：飞书消息与卡片交互入口
 - `lark_client/`：飞书消息、卡片交互与共享状态展示，不负责字符串修复或 ANSI 清理
 - `utils/`：会话管理、协议、日志、运行时配置
 - `scripts/`：安装、卸载、shell 补全、环境检查脚本
@@ -63,7 +63,7 @@ uv run python3 -m pytest tests/test_stream_poller.py tests/test_card_interaction
 uv run python3 -m pytest tests/test_custom_commands.py -q
 
 # 单用例
-uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_skips_feishu_prompt_and_executes_remote_claude_when_optional -q
+uv run python3 -m pytest tests/test_entry_lazy_init.py::test_entry_script_runtime_behaviors -q
 ```
 
 ### Docker 回归
@@ -79,7 +79,7 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 - 如果飞书显示异常，优先检查服务端输出链路，不要在 Lark 侧补丁修复。
 - `utils/runtime_config.py` 的修改型接口必须保持原子读改写，避免多进程竞态。
 - `utils/session.py` 与 `utils/runtime_config.py` 存在循环依赖，`resolve_session_name()` 通过延迟导入规避。
-- `package.json` 负责 npm 分发与安装脚本，`pyproject.toml` 负责 Python 依赖与 pytest 配置；开发时两者都要看。
+- `package.json` 负责 npm 分发与安装脚本；对外公开入口以 `package.json -> bin/remote-claude` 为准。`pyproject.toml` 负责 Python 依赖、pytest 配置与开发态 `uv run` 入口。
 
 ## 测试约定
 

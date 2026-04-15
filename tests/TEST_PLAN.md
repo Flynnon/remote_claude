@@ -53,13 +53,19 @@ uv run python3 -m pytest \
 docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/docker/scripts/docker-test.sh
 ```
 
-当前 Docker 脚本覆盖：
+当前 Docker 主脚本显式覆盖：
 - `npm pack` / `npm install` 后的产物完整性
-- `check-env.sh` 在 `REMOTE_CLAUDE_REQUIRE_FEISHU=0` 下跳过飞书检查
-- `remote-claude lark start` 在 mock 凭证下不无限阻塞
+- `.venv`、`pyproject.toml` 与关键 Python 依赖检查
 - `remote-claude start` 的 Claude / Codex 启动链路
-- 无效 launcher 配置下的失败退出检测
-- 关键单元测试与入口脚本行为回归
+- `remote_claude.py --help`、`remote_claude.py list` 与 `bin/cla` 共享快捷入口检查
+- `scripts/_common.sh` 与配置写入场景的规范化绝对路径检查
+- uninstall hook 的非交互执行
+- 关键 pytest 分组回归：
+  1. `tests/test_session_truncate.py tests/test_runtime_config.py tests/test_custom_commands.py tests/test_cli_help_and_remote.py tests/test_startup_trace_logging.py`
+  2. `tests/test_entry_lazy_init.py`
+  3. `tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_renderer.py`
+
+说明：这里描述的是 `docker/scripts/docker-test.sh` 的当前显式覆盖面；并不等同于仓库全部测试用例都会在 Docker 主脚本中逐一执行。
 
 ### Docker 失败诊断
 

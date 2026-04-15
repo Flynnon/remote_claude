@@ -44,10 +44,11 @@ docker-compose -f docker/docker-compose.test.yml run --rm npm-test /project/dock
 ## 架构速览
 
 - `bin/cla`、`bin/cl`、`bin/cx`、`bin/cdx`、`bin/remote-claude` 是 shell launcher；公开 CLI 主入口是 `remote-claude`，实际实现位于 `remote_claude.py`。
-- `package.json` 负责 npm 分发与安装脚本，`pyproject.toml` 负责 Python 依赖与 pytest 配置；这是 npm + Python 双入口项目。
+- `package.json` 负责 npm 分发与安装脚本；对外公开入口以 `package.json -> bin/remote-claude` 为准。`pyproject.toml` 负责 Python 依赖、pytest 配置与开发态 `uv run` 入口；这是 npm + Python 双入口项目。
 - `server/` 负责 PTY 代理、输出广播、ANSI 解析和终端状态恢复。
+- `server/ws_handler.py` 负责 WebSocket 鉴权、远程控制动作与远程 Lark 管理入口。
 - `client/base_client.py` 抽象终端客户端共性；本地/远程客户端仅实现传输差异。
-- `lark_client/main.py` 是飞书入口；`lark_client/` 只负责展示流转，**严禁**做字符串修复或 ANSI 清理。
+- `lark_client/main.py` / `lark_client/lark_handler.py` 是飞书消息与卡片交互入口；`lark_client/` 只负责展示流转，**严禁**做字符串修复或 ANSI 清理。
 
 ## 关键约束
 
