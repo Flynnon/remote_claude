@@ -115,9 +115,9 @@ fi
 if [ "$1" = "log" ]; then
     LOG_DIR="/tmp/remote-claude"
     if [ -n "$2" ]; then
-        # 指定 session 名，/ 和 . 替换为 _（与 _safe_filename 一致）
-        SESSION_SAFE=$(echo "$2" | tr '/.' '__')
-        LOG_FILE="$LOG_DIR/${SESSION_SAFE}_messages.log"
+        # 指定 session 名，/ . 空格替换为 _（与 _log_filename 一致）
+        SESSION_LOG=$(echo "$2" | tr '/. ' '___')
+        LOG_FILE="$LOG_DIR/${SESSION_LOG}_messages.log"
     else
         # 找最后启动的 session（按创建时间排序，排除 lark.pid）
         # 使用 uname 判断系统类型，兼容 POSIX sh

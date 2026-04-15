@@ -181,8 +181,9 @@ class LarkHandler:
         self._chat_sessions.pop(chat_id, None)
         self._detached_slices.pop(chat_id, None)
 
-        def on_disconnect():
-            asyncio.create_task(self._on_disconnect(chat_id, session_name))
+        def on_disconnect(disconnected_bridge=None):
+            asyncio.create_task(self._on_disconnect(chat_id, session_name,
+                                                    disconnected_bridge=disconnected_bridge))
 
         bridge = SessionBridge(session_name, on_disconnect=on_disconnect)
         if await bridge.connect():
@@ -203,8 +204,15 @@ class LarkHandler:
         self._chat_sessions.pop(chat_id, None)
         self._poller.stop(chat_id)
 
-    async def _on_disconnect(self, chat_id: str, session_name: str):
+    async def _on_disconnect(self, chat_id: str, session_name: str,
+                              disconnected_bridge=None):
         """服务端关闭连接时的统一处理"""
+        # 防竞态：若当前 bridge 已被 _attach 替换为新实例，跳过清理
+        current_bridge = self._bridges.get(chat_id)
+        if disconnected_bridge is not None and current_bridge is not disconnected_bridge:
+            logger.info(f"会话 '{session_name}' 旧连接断线（已被替换），跳过清理")
+            return
+
         logger.info(f"会话 '{session_name}' 断线, chat_id={chat_id[:8]}...")
         _track_stats('lark', 'disconnect', session_name=session_name,
                      chat_id=chat_id)
@@ -212,7 +220,8 @@ class LarkHandler:
         self._bridges.pop(chat_id, None)
         self._chat_sessions.pop(chat_id, None)
         self._detached_slices.pop(chat_id, None)
-        self._remove_binding_by_chat(chat_id)
+        # 注意：不清除持久化绑定，socket 断连是临时状态，下次操作可自动恢复
+        # 只有用户主动 /detach 或 /kill 时才清除绑定
 
         if active_slice:
             await self._update_card_disconnected(chat_id, session_name, active_slice)
@@ -277,6 +286,8 @@ class LarkHandler:
             await self._cmd_help(user_id, chat_id)
         elif command == "/menu":
             await self._cmd_menu(user_id, chat_id)
+        elif command == "/press":
+            await self._cmd_press(user_id, chat_id, args)
         else:
             await card_service.send_text(chat_id, f"未知命令: {command}\n使用 /help 查看帮助")
 
@@ -334,7 +345,7 @@ class LarkHandler:
         if card_id:
             await card_service.send_card(chat_id, card_id)
 
-    async def _cmd_start(self, user_id: str, chat_id: str, args: str):
+    async def _cmd_start(self, user_id: str, chat_id: str, args: str, cli_type: str = "claude"):
         """启动新会话"""
         parts = args.strip().split(maxsplit=1)
         if not parts:
@@ -827,7 +838,8 @@ class LarkHandler:
         session = next((s for s in sessions if s["name"] == session_name), None)
         pid = session.get("pid") if session else None
         cwd = self._get_pid_cwd(pid) if pid else None
-        dir_label = cwd.rstrip("/").rsplit("/", 1)[-1] if cwd else session_name
+        from .card_builder import _get_display_name
+        dir_label = _get_display_name(session_name, cwd)
 
         from . import config
         try:
@@ -1010,6 +1022,9 @@ class LarkHandler:
                 return
 
         if not bridge:
+            await card_service.send_text(
+                chat_id, "未连接到任何会话，请先使用 /attach <会话名> 连接"
+            )
             return
 
         success = await bridge.send_input(text)
@@ -1027,8 +1042,8 @@ class LarkHandler:
                      session_name=self._chat_sessions.get(chat_id, ''),
                      chat_id=chat_id, detail=option_value)
 
-        bridge = self._bridges.get(chat_id)
-        if not bridge or not bridge.running:
+        bridge = await self._ensure_bridge(chat_id, user_id=user_id)
+        if not bridge:
             await card_service.send_text(chat_id, "未连接到任何会话，请先使用 /attach <会话名> 连接")
             return
 
@@ -1147,6 +1162,105 @@ class LarkHandler:
         else:
             await card_service.send_text(chat_id, "发送失败")
 
+    @staticmethod
+    def _parse_key_combo(combo: str) -> Optional[bytes]:
+        """将用户输入的按键字符串解析为终端转义序列字节，解析失败返回 None"""
+        BASE_KEY_MAP = {
+            "up":       b"\x1b[A",
+            "down":     b"\x1b[B",
+            "right":    b"\x1b[C",
+            "left":     b"\x1b[D",
+            "enter":    b"\r",
+            "esc":      b"\x1b",
+            "tab":      b"\t",
+            "backspace": b"\x7f",
+            "delete":   b"\x1b[3~",
+            "space":    b" ",
+            "home":     b"\x1b[H",
+            "end":      b"\x1b[F",
+            "pageup":   b"\x1b[5~",
+            "pagedown": b"\x1b[6~",
+            "f1":  b"\x1bOP",   "f2":  b"\x1bOQ",  "f3":  b"\x1bOR",  "f4":  b"\x1bOS",
+            "f5":  b"\x1b[15~", "f6":  b"\x1b[17~","f7":  b"\x1b[18~","f8":  b"\x1b[19~",
+            "f9":  b"\x1b[20~", "f10": b"\x1b[21~","f11": b"\x1b[23~","f12": b"\x1b[24~",
+        }
+
+        s = combo.strip().lower()
+        parts = [p.strip() for p in s.split("+")]
+
+        mods = set()
+        keys = []
+        for p in parts:
+            if p in ("ctrl", "alt", "shift"):
+                mods.add(p)
+            else:
+                keys.append(p)
+
+        if len(keys) != 1:
+            return None
+        key = keys[0]
+
+        # ctrl+letter → \x01-\x1a
+        if mods == {"ctrl"}:
+            if len(key) == 1 and 'a' <= key <= 'z':
+                return bytes([ord(key) - ord('a') + 1])
+            # ctrl+[ = ESC, ctrl+\ = FS 等特殊控制字符
+            ctrl_special = {'[': b'\x1b', '\\': b'\x1c', ']': b'\x1d', '^': b'\x1e', '_': b'\x1f'}
+            if key in ctrl_special:
+                return ctrl_special[key]
+            return None
+
+        # alt+key → ESC prefix
+        if mods == {"alt"}:
+            base = BASE_KEY_MAP.get(key)
+            if base:
+                return b"\x1b" + base
+            if len(key) == 1:
+                return b"\x1b" + key.encode()
+            return None
+
+        # shift+tab / shift+enter
+        if mods == {"shift"}:
+            if key == "tab":
+                return b"\x1b[Z"
+            if key == "enter":
+                return b"\x1b[13;2u"
+            return None
+
+        # 无修饰键
+        if not mods:
+            return BASE_KEY_MAP.get(key)
+
+        return None
+
+    async def _cmd_press(self, user_id: str, chat_id: str, args: str):
+        """发送任意按键组合到会话"""
+        combo = args.strip()
+        if not combo:
+            await card_service.send_text(
+                chat_id,
+                "用法：`/press <按键>`\n"
+                "例如：`/press ctrl+c`、`/press esc`、`/press ctrl+f`、`/press alt+x`\n"
+                "支持：ctrl/alt/shift 修饰键，方向键 up/down/left/right，enter/esc/tab/backspace/delete/space/home/end/pageup/pagedown/f1-f12"
+            )
+            return
+
+        raw = LarkHandler._parse_key_combo(combo)
+        if raw is None:
+            await card_service.send_text(chat_id, f"❌ 无法解析按键：`{combo}`\n使用 `/press` 查看支持的按键格式")
+            return
+
+        bridge = self._bridges.get(chat_id)
+        if not bridge or not bridge.running:
+            await card_service.send_text(chat_id, "❌ 当前未连接到会话，请先使用 /attach 连接")
+            return
+
+        success = await bridge.send_raw(raw)
+        if success:
+            logger.info(f"[press] 发送按键 {combo!r} ({raw!r}) 到会话")
+        else:
+            await card_service.send_text(chat_id, f"❌ 发送按键 `{combo}` 失败")
+
     async def send_raw_key(self, user_id: str, chat_id: str, key_name: str):
         """发送原始控制键到 Claude CLI"""
         _track_stats('lark', 'raw_key',
@@ -1165,9 +1279,9 @@ class LarkHandler:
             logger.warning(f"未知快捷键: {key_name}")
             return
 
-        bridge = self._bridges.get(chat_id)
-        if not bridge or not bridge.running:
-            logger.warning(f"send_raw_key: chat_id={chat_id[:8]}... 未连接会话")
+        bridge = await self._ensure_bridge(chat_id, user_id=user_id)
+        if not bridge:
+            logger.warning(f"send_raw_key: chat_id={chat_id[:8]}... 未连接会话（自动恢复失败）")
             return
 
         success = await bridge.send_raw(raw)

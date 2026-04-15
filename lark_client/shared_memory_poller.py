@@ -299,6 +299,8 @@ class SharedMemoryPoller:
         agent_panel = state.get("agent_panel")
         option_block = state.get("option_block")
         cli_type = state.get("cli_type", "claude")
+        # timestamp 存在说明 server 已写入有效快照（即使内容全空，如 Codex 就绪等待输入）
+        has_valid_snapshot = state.get("timestamp") is not None
 
         # 步骤 2：仅计算就绪状态，不发送通知
         should_notify = self._update_ready_state(tracker, blocks, status_line, option_block)
@@ -375,7 +377,9 @@ class SharedMemoryPoller:
                 active = last_card
 
         if not blocks and not status_line and not bottom_bar and not agent_panel and not option_block and active is None:
-            return  # 完全无内容且无活跃卡片时不创建卡片
+            if not has_valid_snapshot:
+                return  # 真的还没有快照，不创建卡片
+            # 有效快照但内容全空（如 Codex 就绪等待输入），继续创建就绪卡片
 
         if active is None:
             # 需要创建新卡片
@@ -486,8 +490,8 @@ class SharedMemoryPoller:
                 )
 
         blocks_slice = blocks[start_idx:]
-        if not blocks_slice and not status_line and not bottom_bar and not agent_panel and not option_block:
-            return
+        # 注意：不在此处提前 return，上层 _do_card_update 已做过滤，
+        # 走到这里说明确实需要创建卡片（如 Codex 就绪等待输入的空内容卡片）
 
         blocks_slice, trimmed_count = _trim_card_head_by_size(
             blocks_slice,

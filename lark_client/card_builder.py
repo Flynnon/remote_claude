@@ -922,6 +922,16 @@ def _get_display_name(name: str, cwd: str = None) -> str:
     return name
 
 
+def _get_display_name(name: str, cwd: str = None) -> str:
+    """从会话名和 CWD 获取显示名。自定义会话名直接用，默认路径名取 CWD 末段。"""
+    is_default = bool(_re.search(r'_\d{4}_\d{6}$', name))
+    if not is_default:
+        return name
+    if cwd:
+        return cwd.rstrip("/").rsplit("/", 1)[-1] or name
+    return name
+
+
 def _build_session_list_elements(sessions: List[Dict], current_session: Optional[str], session_groups: Optional[Dict[str, str]], page: int = 0) -> List[Dict]:
     """构建会话列表元素（供 build_menu_card 复用）"""
     import os
