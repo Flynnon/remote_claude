@@ -207,9 +207,17 @@ def test_package_json_includes_public_docs_but_not_superpowers_docs():
 def test_package_json_includes_postinstall_script_in_packed_files():
     package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
     files = package["files"]
-    npmignore = (REPO_ROOT / ".npmignore").read_text(encoding="utf-8")
 
     assert "scripts/postinstall.sh" in files
+    assert "scripts/*.sh" in files
+
+
+def test_npmignore_preserves_install_scripts_when_present():
+    npmignore_path = REPO_ROOT / ".npmignore"
+    if not npmignore_path.exists():
+        return
+
+    npmignore = npmignore_path.read_text(encoding="utf-8")
     assert "!scripts/postinstall.sh" in npmignore
     assert "!scripts/preinstall.sh" in npmignore
     assert "!scripts/uninstall.sh" in npmignore

@@ -461,7 +461,35 @@ check_canonical_paths() {
     fi
 }
 
-# 步骤 10：生成测试报告
+# 步骤 10：运行当前关键 pytest 用例
+run_current_pytest_regressions() {
+    print_header "步骤 10：运行当前关键 pytest 用例"
+
+    local install_dir="$1"
+    cd "$install_dir/node_modules/remote-claude"
+
+    local -a pytest_groups=(
+        "tests/test_session_truncate.py tests/test_runtime_config.py tests/test_custom_commands.py tests/test_cli_help_and_remote.py tests/test_startup_trace_logging.py"
+        "tests/test_entry_lazy_init.py"
+        "tests/test_stream_poller.py tests/test_card_interaction.py tests/test_disconnected_state.py tests/test_renderer.py"
+    )
+
+    local idx=1
+    for group in "${pytest_groups[@]}"; do
+        local log_file="$RESULTS_DIR/pytest_group_${idx}.log"
+        log_info "运行 pytest 组 ${idx}: $group"
+        if uv run python3 -m pytest $group -q > "$log_file" 2>&1; then
+            log_success "pytest 组 ${idx} 通过"
+        else
+            log_error "pytest 组 ${idx} 失败"
+            print_log_file "$log_file"
+            return 1
+        fi
+        idx=$((idx + 1))
+    done
+}
+
+# 步骤 11：生成测试报告
 generate_report() {
     print_header "步骤 10：生成测试报告"
 
@@ -536,7 +564,7 @@ verify_uninstall_hook() {
     fi
 }
 
-# 步骤 11：清理
+# 步骤 12：清理
 cleanup() {
     print_header "步骤 11：清理"
 
@@ -625,13 +653,19 @@ main() {
         mark_critical_step_failed
     fi
 
-    # 步骤 10：生成测试报告
+    # 步骤 10：运行当前关键 pytest 用例
+    if ! run_current_pytest_regressions "$INSTALL_DIR"; then
+        log_error "关键 pytest 用例回归失败，继续执行..."
+        mark_critical_step_failed
+    fi
+
+    # 步骤 11：生成测试报告
     generate_report
 
     # 输出最终结果
     print_results
 
-    # 步骤 11：清理
+    # 步骤 12：清理
     cleanup
 
     if [ $CRITICAL_STEP_FAILED -ne 0 ]; then

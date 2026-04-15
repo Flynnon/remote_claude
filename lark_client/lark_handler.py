@@ -994,32 +994,33 @@ class LarkHandler:
         """Enter 提交被禁用时的提示处理。"""
         await card_service.send_text(chat_id, "已关闭回车直接发送，请点击“点击发送”按钮提交")
 
-    async def _forward_to_claude(self, user_id: str, chat_id: str, text: str):
-        """转发消息给 Claude（输出由 SharedMemoryPoller 自动推卡片）"""
+    async def _ensure_bridge(self, chat_id: str, *, user_id: Optional[str] = None):
+        """确保 chat_id 绑定的 bridge 可用；必要时尝试从持久化绑定恢复。"""
         bridge = self._bridges.get(chat_id)
 
-        if not bridge or not bridge.running:
-            # 尝试从持久化绑定自动恢复
-            saved_session = self._chat_bindings.get(chat_id)
-            if saved_session:
-                logger.info(f"自动恢复绑定: chat_id={chat_id[:8]}..., session={saved_session}")
-                ok = await self._attach(chat_id, saved_session, user_id=user_id)
-                if not ok:
-                    self._group_chat_ids.discard(chat_id)
-                    self._save_group_chat_ids()
-                    self._remove_binding_by_chat(chat_id, force=True)
-                    await card_service.send_text(
-                        chat_id, f"会话 '{saved_session}' 已不存在，请重新 /attach"
-                    )
-                    # 会话已不存在，解散绑定到该会话的所有专属群聊
-                    await self._disband_groups_for_session(saved_session, source="lazy")
-                    return
-                bridge = self._bridges.get(chat_id)
-            else:
+        if bridge and bridge.running:
+            return bridge
+
+        saved_session = self._chat_bindings.get(chat_id)
+        if saved_session:
+            logger.info(f"自动恢复绑定: chat_id={chat_id[:8]}..., session={saved_session}")
+            ok = await self._attach(chat_id, saved_session, user_id=user_id)
+            if not ok:
+                self._group_chat_ids.discard(chat_id)
+                self._save_group_chat_ids()
+                self._remove_binding_by_chat(chat_id, force=True)
                 await card_service.send_text(
-                    chat_id, "未连接到任何会话，请先使用 /attach <会话名> 连接"
+                    chat_id, f"会话 '{saved_session}' 已不存在，请重新 /attach"
                 )
-                return
+                await self._disband_groups_for_session(saved_session, source="lazy")
+                return None
+            return self._bridges.get(chat_id)
+
+        return None
+
+    async def _forward_to_claude(self, user_id: str, chat_id: str, text: str):
+        """转发消息给 Claude（输出由 SharedMemoryPoller 自动推卡片）"""
+        bridge = await self._ensure_bridge(chat_id, user_id=user_id)
 
         if not bridge:
             await card_service.send_text(

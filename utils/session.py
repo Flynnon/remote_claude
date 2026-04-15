@@ -423,7 +423,7 @@ def list_active_sessions() -> List[dict]:
                     "cwd": cwd or "",
                     "start_time": start_time,
                     "mtime": mtime,
-                    "tmux": tmux_exists,
+                    "tmux": True,
                     "cli_type": cli_type
                 })
             except (ProcessLookupError, ValueError, OSError):

@@ -8,6 +8,7 @@ Proxy Server
 - 输出历史缓存
 """
 
+import atexit
 import asyncio
 import json
 import logging
@@ -36,7 +37,7 @@ from utils.protocol import (
 )
 from utils.session import (
     get_socket_path, get_pid_file, ensure_socket_dir,
-    generate_client_id, cleanup_session, get_env_file,
+    generate_client_id, cleanup_session, get_env_file, get_name_file,
     SOCKET_DIR, _safe_filename
 )
 
@@ -230,7 +231,7 @@ class OutputWatcher:
         self._on_snapshot = on_snapshot  # 回调：写共享内存
         self._debug_screen = debug_screen  # --debug-screen 开启后才写 _screen.log
         self._debug_verbose = debug_verbose  # --debug-verbose 开启后输出 indicator/repr 等诊断信息
-        log_name = _log_filename(session_name)
+        log_name = _safe_filename(session_name)
         self._debug_file = f"/tmp/remote-claude/{log_name}_messages.log"
         # PTY 原始字节流日志（仅 --debug-screen 开启时使用）
         self._raw_log_fd = None
@@ -737,7 +738,7 @@ class OutputWatcher:
         每个字符的 fg/bg 颜色通过 ANSI SGR 序列直接嵌入，
         cat _screen.log 即可在终端看到与 pyte 渲染一致的着色效果。
         """
-        base = f"/tmp/remote-claude/{_log_filename(self._session_name)}"
+        base = f"/tmp/remote-claude/{_safe_filename(self._session_name)}"
         try:
             # pyte 屏幕快照（覆盖写，只保留最新一帧）
             screen_path = base + "_screen.log"

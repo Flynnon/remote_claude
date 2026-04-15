@@ -306,7 +306,7 @@ class SharedMemoryPoller:
         should_notify = self._update_ready_state(tracker, blocks, status_line, option_block)
 
         # 步骤 3：卡片操作（含创建/更新/拆分）
-        await self._do_card_update(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type)
+        await self._do_card_update(tracker, blocks, status_line, bottom_bar, agent_panel, option_block, cli_type, has_valid_snapshot)
 
         # 步骤 4：通知在卡片操作之后发送，确保新卡先出现
         if should_notify:
@@ -364,7 +364,7 @@ class SharedMemoryPoller:
         self, tracker: StreamTracker, blocks: List[dict],
         status_line: Optional[dict], bottom_bar: Optional[dict],
         agent_panel: Optional[dict], option_block: Optional[dict],
-        cli_type: str,
+        cli_type: str, has_valid_snapshot: bool = True,
     ) -> None:
         """卡片操作主体：获取活跃卡片 → 创建/更新/拆分"""
         self._check_card_expiry(tracker)
