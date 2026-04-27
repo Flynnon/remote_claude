@@ -7,6 +7,10 @@
 .env
 *.log
 *.tmp
+scripts/*.sh
+!scripts/postinstall.sh
+!scripts/preinstall.sh
+!scripts/uninstall.sh
 tests/
 backup/
 *.sock

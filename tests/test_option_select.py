@@ -82,16 +82,39 @@ class TestClaudeParserSelectedValue(unittest.TestCase):
         self.assertIsNotNone(ob)
         self.assertEqual(ob.selected_value, '1')
 
+    def test_parse_omits_osc_sequences_from_output_block_ansi_content(self):
+        """OutputBlock 的 ansi_content 不应携带 OSC 标题序列"""
+        screen = make_screen(rows=20)
+
+        divider = '─' * 20
+        write_row(screen, 15, divider)
+        write_row(screen, 18, divider)
+        write_row(screen, 1, '⏺ hello')
+
+        screen.buffer[1][0] = Char(data='⏺', fg='cyan', bg='default')
+        screen.buffer[1][1] = Char(data=' ', fg='default', bg='default')
+        screen.buffer[1][2] = Char(data='h', fg='default', bg='default')
+        screen.buffer[1][3] = Char(data='e', fg='default', bg='default')
+        screen.buffer[1][4] = Char(data='l', fg='default', bg='default')
+        screen.buffer[1][5] = Char(data='l', fg='default', bg='default')
+        screen.buffer[1][6] = Char(data='o', fg='default', bg='default')
+
+        from server.parsers import claude_parser as claude_parser_module
+        original_get_row_ansi_text = claude_parser_module._get_row_ansi_text
+        claude_parser_module._get_row_ansi_text = lambda _screen, row, start_col=0: '\x1b]0;title\x07hello' if row == 1 and start_col == 1 else original_get_row_ansi_text(_screen, row, start_col)
+        try:
+            components = self.parser.parse(screen)
+        finally:
+            claude_parser_module._get_row_ansi_text = original_get_row_ansi_text
+
+        output_blocks = [c for c in components if c.__class__.__name__ == 'OutputBlock']
+        self.assertEqual(len(output_blocks), 1)
+        self.assertNotIn('title', output_blocks[0].ansi_content)
+        self.assertEqual(output_blocks[0].ansi_content, 'hello')
+
     def test_selected_value_empty_when_no_cursor(self):
         """无 ❯ 前缀时，selected_value 应为空字符串"""
         screen, input_rows = self._make_input_screen([
-            '你喜欢哪种编程语言？',
-            '1. Python',
-            '2. Go',
-            '❯ navigate',  # ❯ 在非数字行（会被 _has_numbered_options 用作锚点，但选项行本身无 ❯）
-        ])
-        # 需要至少一个 ❯ 锚点行才能解析，这里写一个有效布局
-        screen2, input_rows2 = self._make_input_screen([
             '你喜欢哪种编程语言？',
             '1. Python',
             '2. Go',
@@ -99,7 +122,7 @@ class TestClaudeParserSelectedValue(unittest.TestCase):
         ])
         # 这种情况下 selected_value 应为空（选项行 "1." 和 "2." 均无 ❯ 前缀）
         overflow = []
-        ob = self.parser._parse_input_area(screen2, input_rows2, [], overflow)
+        ob = self.parser._parse_input_area(screen, input_rows, [], overflow)
         if ob:
             self.assertEqual(ob.selected_value, '')
 
@@ -229,9 +252,23 @@ class TestCodexParserSelectedValue(unittest.TestCase):
         self.assertEqual(ob.selected_value, '2')
 
 
-# ── 3. SharedMemoryPoller.read_snapshot() 测试 ──────────────────────────────
+from lark_client.shared_memory_poller import SharedMemoryPoller, StreamTracker, analyze_option_block
 
-from lark_client.shared_memory_poller import SharedMemoryPoller, StreamTracker
+
+def test_selected_value_preferred_when_present():
+    """analyze_option_block：selected_value 命中时优先确认当前高亮项"""
+    option_block = {
+        'question': '继续吗？',
+        'selected_value': '2',
+        'options': [
+            {'label': '1. Yes', 'value': '1'},
+            {'label': '2. No', 'value': '2'},
+        ],
+    }
+
+    action_type, action_value = analyze_option_block(option_block)
+    assert action_type == 'select'
+    assert action_value == '2'
 
 
 class TestReadSnapshot(unittest.TestCase):
@@ -294,6 +331,17 @@ class TestHandleOptionSelect(unittest.IsolatedAsyncioTestCase):
         handler._bridges = {}
         handler._chat_sessions = {}
         handler._poller = MagicMock()
+        handler._poller.get_tracker = MagicMock(return_value=None)
+        # get_active_card_id 返回 None，跳过 update_card 调用
+        handler._poller.get_active_card_id = MagicMock(return_value=None)
+        handler._chat_bindings = {}
+        handler._group_chat_ids = set()
+        handler._save_group_chat_ids = MagicMock()
+        handler._remove_binding_by_chat = MagicMock()
+        handler._disband_groups_for_session = AsyncMock()
+        handler._attach = AsyncMock(return_value=False)
+        # 添加 _user_config 属性
+        handler._user_config = {}
         return handler
 
     def _make_bridge(self, running=True):
@@ -390,11 +438,18 @@ class TestHandleOptionSelect(unittest.IsolatedAsyncioTestCase):
         handler._bridges['chat1'] = bridge
 
         # 第一次 selected_value 空，发 ↓；第二次到位
-        # 注意：新增了初始读取（记录 initial_block_id），比循环多消耗一次 snapshot
+        # 闪烁帧重试会消耗额外 snapshot，需要提供足够的空值 snapshot
         snapshots = [
             {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test', 'options': []}},  # 初始读取
-            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test', 'options': []}},  # step 0
-            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},  # 轮询等待，未变化
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test', 'options': []}},  # step 0 外层
+            # 闪烁帧重试 5 次（全空，所以会发 ↓）
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
+            # 等待变化轮询（发 ↓ 后等待 selected_value 变化）
+            {'blocks': [], 'option_block': {'selected_value': '', 'block_id': 'Q:test'}},
             {'blocks': [], 'option_block': {'selected_value': '1', 'block_id': 'Q:test'}},  # 变化
             self._make_snapshot('1', block_id='Q:test'),  # step 1：到位，发 Enter
         ]

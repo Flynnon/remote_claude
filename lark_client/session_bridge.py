@@ -9,7 +9,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, Callable, Dict
+from typing import Optional, Callable
 
 logger = logging.getLogger('SessionBridge')
 
@@ -214,7 +214,10 @@ class SessionBridge:
         for byte in data:
             if byte in (0x0d, 0x0a):  # CR or LF → 完整一行
                 if self._input_bytes:
-                    text = self._input_bytes.decode('utf-8', errors='replace').strip()
+                    try:
+                        text = self._input_bytes.decode('utf-8').strip()
+                    except UnicodeDecodeError:
+                        text = self._input_bytes.decode('utf-8', errors='ignore').strip()
                     if text and self.on_input:
                         self.on_input(text)
                     self._input_bytes.clear()

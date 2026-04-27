@@ -14,7 +14,6 @@ import sys
 import time
 import urllib.request
 import urllib.parse
-import urllib.error
 from pathlib import Path
 
 # 将项目根目录加入 sys.path
@@ -79,16 +78,6 @@ def _read_input(prompt: str, default: str = "") -> str:
         print()
         raise
     return val if val else default
-
-
-def _read_secret(prompt: str) -> str:
-    """读取密钥输入（不回显）。"""
-    import getpass
-    try:
-        return getpass.getpass(f"{prompt}: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        raise
 
 
 def _print_header():
@@ -165,12 +154,13 @@ def poll_app_registration(device_code: str, expires_in: int, interval: int,
     deadline = time.time() + expires_in
     attempt = 0
     max_attempts = 200
+    poll_interval = max(interval, 1)
 
     print(f"  {DIM}等待扫码...{RESET}", end="", flush=True)
 
     while time.time() < deadline and attempt < max_attempts:
         attempt += 1
-        time.sleep(3)
+        time.sleep(poll_interval)
         print(".", end="", flush=True)
 
         try:
@@ -184,25 +174,23 @@ def poll_app_registration(device_code: str, expires_in: int, interval: int,
         error = resp.get("error", "")
 
         if not error:
-            # 成功
             if resp.get("client_id"):
                 print(f" {GREEN}✓{RESET}")
                 return resp
-            # 可能还在处理，继续轮询
             continue
-        elif error == "authorization_pending":
+        if error == "authorization_pending":
             continue
-        elif error == "slow_down":
-            pass
-        elif error == "access_denied":
+        if error == "slow_down":
+            poll_interval += max(interval, 1)
+            continue
+        if error == "access_denied":
             print()
             raise RuntimeError("用户拒绝了授权请求")
-        elif error in ("expired_token", "invalid_grant"):
+        if error in ("expired_token", "invalid_grant"):
             print()
             raise RuntimeError("二维码已过期，请重新运行向导")
-        else:
-            print()
-            raise RuntimeError(f"注册失败：{error} - {resp.get('error_description', '')}")
+        print()
+        raise RuntimeError(f"注册失败：{error} - {resp.get('error_description', '')}")
 
     print()
     raise RuntimeError("等待超时，请重新运行向导")
@@ -236,10 +224,6 @@ def create_app_via_scan(brand: str = "feishu") -> tuple[str, str]:
         reg["interval"],
         accounts_base,
     )
-
-    # DEBUG: 打印 user_info 原始内容，用于调试企业检测逻辑（测试完删除）
-    import json as _json
-    print(f"\n  [DEBUG] user_info: {_json.dumps(result.get('user_info', {}), ensure_ascii=False, indent=2)}\n")
 
     # 处理 Lark 双端特殊情况（feishu 端点可能不返回 lark 租户的 secret）
     tenant_brand = result.get("user_info", {}).get("tenant_brand", "feishu")
@@ -316,81 +300,46 @@ def _try_print_qrcode(url: str):
 
 # ── OAuth 设备流：权限授权 ─────────────────────────────────────────────────
 
-# remote_claude 机器人所需的最小权限 scope 集合
-# 格式：飞书 OAuth scope（空格分隔）
-REMOTE_CLAUDE_SCOPES = " ".join([
-    # 卡片
-    "cardkit:card:write",
-    # 通讯录
-    "contact:contact.base:readonly",
-    "contact:user.base:readonly",
-    "contact:user.employee_id:readonly",
-    "contact:user.id:readonly",
-    # 群聊管理
-    "im:chat.managers:write_only",
-    "im:chat.members:read",
-    "im:chat.members:write_only",
-    "im:chat.tabs:read",
-    "im:chat.tabs:write_only",
-    "im:chat.top_notice:write_only",
-    "im:chat:create",
-    "im:chat:delete",
-    "im:chat:operate_as_owner",
-    "im:chat:read",
-    "im:chat:update",
-    # 消息收发
-    "im:message.group_at_msg:readonly",
-    "im:message.group_msg",
-    "im:message.p2p_msg:readonly",
-    "im:message.reactions:read",
-    "im:message.reactions:write_only",
-    "im:message.urgent",
-    "im:message.urgent.status:write",
-    "im:message:readonly",
-    "im:message:recall",
-    "im:message:send_as_bot",
-    "im:message:update",
-    "im:resource",
-    # 离线访问（refresh token）
-    "offline_access",
-])
-
-
-# 应用身份权限（tenant scope）列表，与 README.md tenant 部分保持一致
-# 仅保留 Remote Claude 实际使用的权限（消息收发、卡片、群聊管理、加急通知）
-TENANT_SCOPES = [
-    # 卡片
-    "cardkit:card:write",
-    # 通讯录
-    "contact:contact.base:readonly",
-    "contact:user.employee_id:readonly",
-    "contact:user.id:readonly",
-    # 群聊管理
-    "im:chat.members:read",
-    "im:chat.members:write_only",
-    "im:chat.tabs:read",
-    "im:chat.tabs:write_only",
-    "im:chat.top_notice:write_only",
-    "im:chat:create",
-    "im:chat:delete",
-    "im:chat:operate_as_owner",
-    "im:chat:read",
-    "im:chat:update",
-    # 消息收发
-    "im:message.group_at_msg:readonly",
-    "im:message.group_msg",
-    "im:message.p2p_msg:readonly",
-    "im:message.reactions:read",
-    "im:message.reactions:write_only",
-    "im:message.urgent",
-    "im:message.urgent.status:write",
-    "im:message:readonly",
-    "im:message:recall",
-    "im:message:send_as_bot",
-    "im:message:update",
-    "im:message:urgent_app",
-    "im:resource",
+_PERMISSION_SPECS = [
+    {"name": "cardkit:card:write", "desc": "写入卡片内容", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "contact:contact.base:readonly", "desc": "读取通讯录基本信息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "contact:user.base:readonly", "desc": "读取用户基本信息", "oauth": True, "tenant": False, "checklist": True},
+    {"name": "contact:user.employee_id:readonly", "desc": "读取用户工号", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "contact:user.id:readonly", "desc": "读取用户 ID", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat.managers:write_only", "desc": "管理群聊管理员", "oauth": True, "tenant": False, "checklist": True},
+    {"name": "im:chat.members:read", "desc": "读取群成员", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat.members:write_only", "desc": "管理群成员", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat.tabs:read", "desc": "读取群标签页", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat.tabs:write_only", "desc": "管理群标签页", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat.top_notice:write_only", "desc": "设置群置顶公告", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat:create", "desc": "创建群聊", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat:delete", "desc": "删除群聊", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat:operate_as_owner", "desc": "以群主身份操作", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat:read", "desc": "读取群聊信息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:chat:update", "desc": "更新群聊信息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message.group_at_msg:readonly", "desc": "读取群 @ 消息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message.group_msg", "desc": "发送群消息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message.p2p_msg:readonly", "desc": "读取私聊消息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message.reactions:read", "desc": "读取消息表情回应", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message.reactions:write_only", "desc": "管理消息表情回应", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message.urgent", "desc": "发送加急消息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message.urgent.status:write", "desc": "更新加急消息状态", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message:readonly", "desc": "只读消息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message:recall", "desc": "撤回消息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message:send_as_bot", "desc": "以机器人身份发消息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message:update", "desc": "更新消息", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "im:message:urgent_app", "desc": "以应用身份发送加急消息", "oauth": False, "tenant": True, "checklist": True},
+    {"name": "im:resource", "desc": "上传/下载消息资源", "oauth": True, "tenant": True, "checklist": True},
+    {"name": "offline_access", "desc": "离线访问（refresh token）", "oauth": True, "tenant": False, "checklist": False},
 ]
+
+
+def _derive_scopes(flag: str) -> list[str]:
+    return [spec["name"] for spec in _PERMISSION_SPECS if spec[flag]]
+
+
+REMOTE_CLAUDE_SCOPES = " ".join(_derive_scopes("oauth"))
+TENANT_SCOPES = _derive_scopes("tenant")
 
 
 def authorize_tenant_scopes(app_id: str, brand: str = "feishu") -> None:
@@ -470,12 +419,13 @@ def poll_device_token(app_id: str, app_secret: str,
 
     deadline = time.time() + expires_in
     attempt = 0
+    poll_interval = max(interval, 1)
 
     print(f"  {DIM}等待授权确认...{RESET}", end="", flush=True)
 
     while time.time() < deadline and attempt < 200:
         attempt += 1
-        time.sleep(3)
+        time.sleep(poll_interval)
         print(".", end="", flush=True)
 
         try:
@@ -492,19 +442,19 @@ def poll_device_token(app_id: str, app_secret: str,
         if not error and resp.get("access_token"):
             print(f" {GREEN}✓{RESET}")
             return resp
-        elif error == "authorization_pending":
+        if error == "authorization_pending":
             continue
-        elif error == "slow_down":
-            pass
-        elif error == "access_denied":
+        if error == "slow_down":
+            poll_interval += max(interval, 1)
+            continue
+        if error == "access_denied":
             print()
             raise RuntimeError("用户拒绝了授权")
-        elif error in ("expired_token", "invalid_grant"):
+        if error in ("expired_token", "invalid_grant"):
             print()
             raise RuntimeError("授权链接已过期")
-        else:
-            print()
-            raise RuntimeError(f"授权失败：{error}")
+        print()
+        raise RuntimeError(f"授权失败：{error}")
 
     print()
     raise RuntimeError("等待超时")
@@ -572,160 +522,34 @@ def verify_credentials(app_id: str, app_secret: str) -> tuple[bool, str]:
 
 # ── .env 文件读写 ──────────────────────────────────────────────────────────
 
-def _read_env_file(path: Path) -> list[str]:
-    """读取 .env 文件的所有行。"""
-    if path.exists():
-        return path.read_text(encoding="utf-8").splitlines()
-    return []
-
-
 def write_env_file(app_id: str, app_secret: str) -> Path:
-    """
-    写入 app_id 和 app_secret 到 ~/.remote-claude/.env。
+    """写入 app_id 和 app_secret 到 ~/.remote-claude/.env。"""
+    from utils.env_config import load_env_config, save_env_config
 
-    如果文件已存在，只更新 FEISHU_APP_ID 和 FEISHU_APP_SECRET 两行，保留其他配置。
-    如果文件不存在，从 .env.example 生成。
-    """
     env_path = get_env_file()
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    lines = _read_env_file(env_path)
-
-    if not lines:
-        # 从 .env.example 生成
-        example_path = Path(_PROJECT_ROOT) / ".env.example"
-        if example_path.exists():
-            lines = example_path.read_text(encoding="utf-8").splitlines()
-        else:
-            lines = [
-                "# Remote Claude 飞书客户端配置",
-                "FEISHU_APP_ID=",
-                "FEISHU_APP_SECRET=",
-            ]
-
-    # 更新或追加 FEISHU_APP_ID / FEISHU_APP_SECRET
-    updated_id = False
-    updated_secret = False
-    new_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("FEISHU_APP_ID=") and not stripped.startswith("#"):
-            new_lines.append(f"FEISHU_APP_ID={app_id}")
-            updated_id = True
-        elif stripped.startswith("FEISHU_APP_SECRET=") and not stripped.startswith("#"):
-            new_lines.append(f"FEISHU_APP_SECRET={app_secret}")
-            updated_secret = True
-        else:
-            new_lines.append(line)
-
-    if not updated_id:
-        new_lines.append(f"FEISHU_APP_ID={app_id}")
-    if not updated_secret:
-        new_lines.append(f"FEISHU_APP_SECRET={app_secret}")
-
-    content = "\n".join(new_lines) + "\n"
-
-    # 写入（权限 0600）
-    fd = os.open(str(env_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(content)
-
+    current = load_env_config()
+    current.feishu_app_id = app_id
+    current.feishu_app_secret = app_secret
+    save_env_config(current)
     return env_path
 
 
 def _read_current_config() -> tuple[str, str]:
     """读取当前 .env 中的 app_id 和 app_secret。"""
-    env_path = get_env_file()
-    if not env_path.exists():
-        return "", ""
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("FEISHU_APP_ID=") and not stripped.startswith("#"):
-            _, _, val = stripped.partition("=")
-            app_id = val.strip()
-        elif stripped.startswith("FEISHU_APP_SECRET=") and not stripped.startswith("#"):
-            _, _, val = stripped.partition("=")
-            app_secret = val.strip()
-    return locals().get("app_id", ""), locals().get("app_secret", "")
+    from utils.env_config import EnvConfig
+
+    config = EnvConfig.from_env_file(get_env_file())
+    return config.feishu_app_id, config.feishu_app_secret
 
 
 # ── 应用配置 Checklist ─────────────────────────────────────────────────────
 
-# remote_claude 需要的最小权限集
 REQUIRED_PERMISSIONS = [
-    ("base:app:read", "读取多维表格应用信息"),
-    ("base:field:read", "读取多维表格字段"),
-    ("base:form:read", "读取多维表格表单"),
-    ("base:record:read", "读取多维表格记录"),
-    ("base:record:retrieve", "检索多维表格记录"),
-    ("base:table:read", "读取多维表格表格"),
-    ("board:whiteboard:node:read", "读取白板节点"),
-    ("calendar:calendar.event:create", "创建日历事件"),
-    ("calendar:calendar.event:delete", "删除日历事件"),
-    ("calendar:calendar.event:read", "读取日历事件"),
-    ("calendar:calendar.event:reply", "回复日历事件"),
-    ("calendar:calendar.event:update", "更新日历事件"),
-    ("calendar:calendar.free_busy:read", "读取日历忙闲状态"),
-    ("calendar:calendar:read", "读取日历信息"),
-    ("cardkit:card:write", "写入卡片内容"),
-    ("contact:contact.base:readonly", "读取通讯录基本信息"),
-    ("contact:user.base:readonly", "读取用户基本信息"),
-    ("contact:user.employee_id:readonly", "读取用户工号"),
-    ("contact:user.id:readonly", "读取用户 ID"),
-    ("docs:document.comment:read", "读取文档评论"),
-    ("docs:document.content:read", "读取文档内容"),
-    ("docs:document.media:download", "下载文档媒体"),
-    ("docs:document.media:upload", "上传文档媒体"),
-    ("docs:document:import", "导入文档"),
-    ("docs:permission.member:auth", "校验文档成员权限"),
-    ("docs:permission.member:create", "创建文档成员"),
-    ("docs:permission.member:transfer", "转让文档所有者"),
-    ("docx:document.block:convert", "转换文档块"),
-    ("docx:document:create", "创建 Docx 文档"),
-    ("docx:document:readonly", "只读 Docx 文档"),
-    ("docx:document:write_only", "写入 Docx 文档"),
-    ("drive:drive.metadata:readonly", "读取云空间元数据"),
-    ("drive:drive.search:readonly", "搜索云空间文件"),
-    ("drive:drive:version:readonly", "读取云空间版本"),
-    ("drive:file:download", "下载云空间文件"),
-    ("drive:file:upload", "上传云空间文件"),
-    ("im:chat.managers:write_only", "管理群聊管理员"),
-    ("im:chat.members:read", "读取群成员"),
-    ("im:chat.members:write_only", "管理群成员"),
-    ("im:chat.tabs:read", "读取群标签页"),
-    ("im:chat.tabs:write_only", "管理群标签页"),
-    ("im:chat.top_notice:write_only", "设置群置顶公告"),
-    ("im:chat:create", "创建群聊"),
-    ("im:chat:delete", "删除群聊"),
-    ("im:chat:operate_as_owner", "以群主身份操作"),
-    ("im:chat:read", "读取群聊信息"),
-    ("im:chat:update", "更新群聊信息"),
-    ("im:message.group_at_msg:readonly", "读取群 @ 消息"),
-    ("im:message.group_msg", "发送群消息"),
-    ("im:message.p2p_msg:readonly", "读取私聊消息"),
-    ("im:message.reactions:read", "读取消息表情回应"),
-    ("im:message.reactions:write_only", "管理消息表情回应"),
-    ("im:message.urgent", "发送加急消息"),
-    ("im:message.urgent.status:write", "更新加急消息状态"),
-    ("im:message:readonly", "只读消息"),
-    ("im:message:recall", "撤回消息"),
-    ("im:message:send_as_bot", "以机器人身份发消息"),
-    ("im:message:update", "更新消息"),
-    ("im:resource", "上传/下载消息资源"),
-    ("search:docs:read", "搜索文档"),
-    ("sheets:spreadsheet.meta:read", "读取电子表格元数据"),
-    ("sheets:spreadsheet.meta:write_only", "写入电子表格元数据"),
-    ("sheets:spreadsheet:create", "创建电子表格"),
-    ("sheets:spreadsheet:read", "读取电子表格"),
-    ("sheets:spreadsheet:write_only", "写入电子表格"),
-    ("space:document:delete", "删除知识空间文档"),
-    ("space:document:retrieve", "检索知识空间文档"),
-    ("task:task:read", "读取任务"),
-    ("task:task:readonly", "只读任务"),
-    ("task:task:write", "写入任务"),
-    ("task:task:writeonly", "只写任务"),
-    ("task:tasklist:read", "读取任务列表"),
-    ("wiki:wiki:readonly", "只读知识库"),
+    (spec["name"], spec["desc"])
+    for spec in _PERMISSION_SPECS
+    if spec["checklist"]
 ]
 
 REQUIRED_EVENTS = [
@@ -813,7 +637,7 @@ def run_check():
 
     # 尝试 WebSocket 连接检测
     print(f"\n  尝试 WebSocket 连接...", end="", flush=True)
-    ws_ok, ws_msg = _check_websocket(app_id, app_secret)
+    ws_ok, ws_msg = _check_websocket(app_id, app_secret, result)
     if ws_ok:
         print(f" {GREEN}✓ 成功{RESET}")
         print(f"\n{GREEN}{BOLD}✅ 配置完整，飞书机器人已就绪！{RESET}")
@@ -829,7 +653,7 @@ def run_check():
     return 0
 
 
-def _check_websocket(app_id: str, app_secret: str) -> tuple[bool, str]:
+def _check_websocket(app_id: str, app_secret: str, tenant_token: str | None = None) -> tuple[bool, str]:
     """尝试建立 WebSocket 连接测试机器人能力是否就绪。"""
     try:
         import lark_oapi as lark
@@ -844,18 +668,19 @@ def _check_websocket(app_id: str, app_secret: str) -> tuple[bool, str]:
         return False, f"code={resp.code}, msg={resp.msg}"
     except ImportError:
         # 没有 lark_oapi，退化为 API 检查
-        return _check_bot_api(app_id, app_secret)
+        return _check_bot_api(app_id, app_secret, tenant_token)
     except Exception as e:
         return False, str(e)
 
 
-def _check_bot_api(app_id: str, app_secret: str) -> tuple[bool, str]:
+def _check_bot_api(app_id: str, app_secret: str, tenant_token: str | None = None) -> tuple[bool, str]:
     """使用飞书 REST API 检查机器人能力。"""
     try:
-        # 获取 tenant token
-        ok, token = verify_credentials(app_id, app_secret)
-        if not ok:
-            return False, token
+        token = tenant_token
+        if token is None:
+            ok, token = verify_credentials(app_id, app_secret)
+            if not ok:
+                return False, token
 
         # 调用获取机器人信息 API
         req = urllib.request.Request(
@@ -906,7 +731,6 @@ class SetupWizard:
             # ── 阶段 0：检查已有配置 ─────────────────────────────────────
             _print_step(0, "检查现有配置")
 
-            env_path = get_env_file()
             existing_id, existing_secret = _read_current_config()
 
             if existing_id and existing_id not in ("cli_xxxxx", ""):
